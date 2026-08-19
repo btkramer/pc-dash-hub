@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,8 @@ if not HA_URL or not HA_TOKEN:
 DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
 DEVICES_DIR = DATA_DIR / "devices"
 
+PC_STATE_STALE_AFTER_SECONDS = int(os.environ.get("PC_STATE_STALE_AFTER_SECONDS", "15"))
+
 DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -31,6 +34,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "vibrationEnabled": True,
     "macros": [],
     "activeProfile": "default",
+}
+
+DEFAULT_PC_STATE: dict[str, Any] = {
+    "volumePercent": None,
+    "speakerMuted": None,
+    "nowPlayingIsPlaying": None,
+    "nowPlaying": None,
 }
 
 app = FastAPI(title="pc-dash-hub")
@@ -59,6 +69,21 @@ class WeatherUpdate(BaseModel):
     apiKey: str | None = None
 
 
+class NowPlayingUpdate(BaseModel):
+    title: str | None = None
+    artist: str | None = None
+    source: str | None = None
+    positionMs: int | None = None
+    durationMs: int | None = None
+
+
+class PcStateUpdate(BaseModel):
+    volumePercent: int | None = Field(default=None, ge=0, le=100)
+    speakerMuted: bool | None = None
+    nowPlayingIsPlaying: bool | None = None
+    nowPlaying: NowPlayingUpdate | None = None
+
+
 class SettingsUpdate(BaseModel):
     timeouts: TimeoutsUpdate | None = None
     weather: WeatherUpdate | None = None
@@ -67,6 +92,7 @@ class SettingsUpdate(BaseModel):
     vibrationEnabled: bool | None = None
     macros: list[Any] | None = None
     activeProfile: str | None = None
+    pcState: PcStateUpdate | None = None
 
 
 def _device_path(device_id: str) -> Path:
@@ -83,27 +109,50 @@ def _deep_merge(base: dict, updates: dict) -> None:
             base[key] = value
 
 
-def _load_settings(device_id: str) -> dict:
+def _load_device_doc(device_id: str) -> dict:
     path = _device_path(device_id)
-    settings = json.loads(json.dumps(DEFAULT_SETTINGS))  # cheap deep copy
-    if path.exists():
-        _deep_merge(settings, json.loads(path.read_text()))
-    return settings
+    if not path.exists():
+        return {"settings": {}, "pcState": {}, "lastSeenAt": None}
+    raw = json.loads(path.read_text())
+    if "settings" in raw or "pcState" in raw:
+        return {
+            "settings": raw.get("settings", {}),
+            "pcState": raw.get("pcState", {}),
+            "lastSeenAt": raw.get("lastSeenAt"),
+        }
+    # Pre-pcState file format: the whole file was just the settings dict.
+    return {"settings": raw, "pcState": {}, "lastSeenAt": None}
 
 
-def _save_settings(device_id: str, settings: dict) -> None:
+def _with_defaults(defaults: dict, stored: dict) -> dict:
+    merged = json.loads(json.dumps(defaults))  # cheap deep copy
+    _deep_merge(merged, stored)
+    return merged
+
+
+def _save_device_doc(device_id: str, settings: dict, pc_state: dict, last_seen_at: str | None) -> None:
     path = _device_path(device_id)
     DEVICES_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2))
+    doc = {"settings": settings, "pcState": pc_state, "lastSeenAt": last_seen_at}
+    path.write_text(json.dumps(doc, indent=2))
 
 
-def _device_state(device_id: str, settings: dict) -> dict:
+def _device_state(device_id: str, settings: dict, pc_state: dict, last_seen_at: str | None) -> dict:
+    if last_seen_at is None:
+        seconds_ago = None
+        connected = False
+    else:
+        seen = datetime.fromisoformat(last_seen_at)
+        seconds_ago = (datetime.now(timezone.utc) - seen).total_seconds()
+        connected = seconds_ago < PC_STATE_STALE_AFTER_SECONDS
+
     return {
         "deviceId": device_id,
         "settings": settings,
         "pcState": {
-            "pcConnected": False,
-            "lastSeenSecondsAgo": None,
+            **pc_state,
+            "pcConnected": connected,
+            "lastSeenSecondsAgo": None if seconds_ago is None else round(seconds_ago),
         },
     }
 
@@ -145,12 +194,26 @@ async def set_light(req: LightRequest):
 
 @app.get("/api/devices/{device_id}/state")
 async def get_device_state(device_id: str):
-    return _device_state(device_id, _load_settings(device_id))
+    doc = _load_device_doc(device_id)
+    settings = _with_defaults(DEFAULT_SETTINGS, doc["settings"])
+    pc_state = _with_defaults(DEFAULT_PC_STATE, doc["pcState"])
+    return _device_state(device_id, settings, pc_state, doc["lastSeenAt"])
 
 
 @app.put("/api/devices/{device_id}/state")
 async def update_device_state(device_id: str, update: SettingsUpdate):
-    settings = _load_settings(device_id)
-    _deep_merge(settings, update.model_dump(exclude_unset=True))
-    _save_settings(device_id, settings)
-    return _device_state(device_id, settings)
+    doc = _load_device_doc(device_id)
+
+    settings = _with_defaults(DEFAULT_SETTINGS, doc["settings"])
+    update_fields = update.model_dump(exclude_unset=True, exclude={"pcState"})
+    _deep_merge(settings, update_fields)
+
+    pc_state = _with_defaults(DEFAULT_PC_STATE, doc["pcState"])
+    last_seen_at = doc["lastSeenAt"]
+    if update.pcState is not None:
+        pc_update = update.pcState.model_dump(exclude_unset=True)
+        _deep_merge(pc_state, pc_update)
+        last_seen_at = datetime.now(timezone.utc).isoformat()
+
+    _save_device_doc(device_id, settings, pc_state, last_seen_at)
+    return _device_state(device_id, settings, pc_state, last_seen_at)
