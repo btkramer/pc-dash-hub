@@ -43,6 +43,14 @@ DEFAULT_PC_STATE: dict[str, Any] = {
     "nowPlaying": None,
 }
 
+# Mutable per-macro runtime state (e.g. screenshot.capture's live capture
+# mode), keyed by macro id. Deliberately separate from `macros` itself
+# (see MacroDefinition/SettingsUpdate below) since macro *definitions*
+# replace wholesale on PUT, but this needs per-id partial merge — see
+# coordinator-reports/pc-dash.md's 2026-08-20 T8 entries for the full
+# reasoning, worked out jointly with pc-dash-app.
+DEFAULT_MACRO_STATE: dict[str, Any] = {}
+
 app = FastAPI(title="pc-dash-hub")
 
 
@@ -84,15 +92,25 @@ class PcStateUpdate(BaseModel):
     nowPlaying: NowPlayingUpdate | None = None
 
 
+class MacroDefinition(BaseModel):
+    id: str
+    label: str
+    icon: str | None = None
+    type: str
+    target: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class SettingsUpdate(BaseModel):
     timeouts: TimeoutsUpdate | None = None
     weather: WeatherUpdate | None = None
     clockFaceId: str | None = None
     buzzerEnabled: bool | None = None
     vibrationEnabled: bool | None = None
-    macros: list[Any] | None = None
+    macros: list[MacroDefinition] | None = None
     activeProfile: str | None = None
     pcState: PcStateUpdate | None = None
+    macroState: dict[str, dict[str, Any]] | None = None
 
 
 def _device_path(device_id: str) -> Path:
@@ -112,16 +130,17 @@ def _deep_merge(base: dict, updates: dict) -> None:
 def _load_device_doc(device_id: str) -> dict:
     path = _device_path(device_id)
     if not path.exists():
-        return {"settings": {}, "pcState": {}, "lastSeenAt": None}
+        return {"settings": {}, "pcState": {}, "macroState": {}, "lastSeenAt": None}
     raw = json.loads(path.read_text())
     if "settings" in raw or "pcState" in raw:
         return {
             "settings": raw.get("settings", {}),
             "pcState": raw.get("pcState", {}),
+            "macroState": raw.get("macroState", {}),
             "lastSeenAt": raw.get("lastSeenAt"),
         }
     # Pre-pcState file format: the whole file was just the settings dict.
-    return {"settings": raw, "pcState": {}, "lastSeenAt": None}
+    return {"settings": raw, "pcState": {}, "macroState": {}, "lastSeenAt": None}
 
 
 def _with_defaults(defaults: dict, stored: dict) -> dict:
@@ -130,14 +149,16 @@ def _with_defaults(defaults: dict, stored: dict) -> dict:
     return merged
 
 
-def _save_device_doc(device_id: str, settings: dict, pc_state: dict, last_seen_at: str | None) -> None:
+def _save_device_doc(
+    device_id: str, settings: dict, pc_state: dict, macro_state: dict, last_seen_at: str | None
+) -> None:
     path = _device_path(device_id)
     DEVICES_DIR.mkdir(parents=True, exist_ok=True)
-    doc = {"settings": settings, "pcState": pc_state, "lastSeenAt": last_seen_at}
+    doc = {"settings": settings, "pcState": pc_state, "macroState": macro_state, "lastSeenAt": last_seen_at}
     path.write_text(json.dumps(doc, indent=2))
 
 
-def _device_state(device_id: str, settings: dict, pc_state: dict, last_seen_at: str | None) -> dict:
+def _device_state(device_id: str, settings: dict, pc_state: dict, macro_state: dict, last_seen_at: str | None) -> dict:
     if last_seen_at is None:
         seconds_ago = None
         connected = False
@@ -154,6 +175,7 @@ def _device_state(device_id: str, settings: dict, pc_state: dict, last_seen_at: 
             "pcConnected": connected,
             "lastSeenSecondsAgo": None if seconds_ago is None else round(seconds_ago),
         },
+        "macroState": macro_state,
     }
 
 
@@ -197,7 +219,8 @@ async def get_device_state(device_id: str):
     doc = _load_device_doc(device_id)
     settings = _with_defaults(DEFAULT_SETTINGS, doc["settings"])
     pc_state = _with_defaults(DEFAULT_PC_STATE, doc["pcState"])
-    return _device_state(device_id, settings, pc_state, doc["lastSeenAt"])
+    macro_state = _with_defaults(DEFAULT_MACRO_STATE, doc["macroState"])
+    return _device_state(device_id, settings, pc_state, macro_state, doc["lastSeenAt"])
 
 
 @app.put("/api/devices/{device_id}/state")
@@ -205,7 +228,7 @@ async def update_device_state(device_id: str, update: SettingsUpdate):
     doc = _load_device_doc(device_id)
 
     settings = _with_defaults(DEFAULT_SETTINGS, doc["settings"])
-    update_fields = update.model_dump(exclude_unset=True, exclude={"pcState"})
+    update_fields = update.model_dump(exclude_unset=True, exclude={"pcState", "macroState"})
     _deep_merge(settings, update_fields)
 
     pc_state = _with_defaults(DEFAULT_PC_STATE, doc["pcState"])
@@ -215,5 +238,9 @@ async def update_device_state(device_id: str, update: SettingsUpdate):
         _deep_merge(pc_state, pc_update)
         last_seen_at = datetime.now(timezone.utc).isoformat()
 
-    _save_device_doc(device_id, settings, pc_state, last_seen_at)
-    return _device_state(device_id, settings, pc_state, last_seen_at)
+    macro_state = _with_defaults(DEFAULT_MACRO_STATE, doc["macroState"])
+    if update.macroState is not None:
+        _deep_merge(macro_state, update.macroState)
+
+    _save_device_doc(device_id, settings, pc_state, macro_state, last_seen_at)
+    return _device_state(device_id, settings, pc_state, macro_state, last_seen_at)
