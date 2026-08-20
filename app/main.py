@@ -22,7 +22,7 @@ if not HA_URL or not HA_TOKEN:
 DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
 DEVICES_DIR = DATA_DIR / "devices"
 
-PC_STATE_STALE_AFTER_SECONDS = int(os.environ.get("PC_STATE_STALE_AFTER_SECONDS", "15"))
+PC_STATE_STALE_AFTER_SECONDS = int(os.environ.get("PC_STATE_STALE_AFTER_SECONDS", "12"))
 
 DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
