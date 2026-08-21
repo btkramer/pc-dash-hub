@@ -220,6 +220,14 @@ async def get_device_state(device_id: str):
     settings = _with_defaults(DEFAULT_SETTINGS, doc["settings"])
     pc_state = _with_defaults(DEFAULT_PC_STATE, doc["pcState"])
     macro_state = _with_defaults(DEFAULT_MACRO_STATE, doc["macroState"])
+    # Temporary T25 debug instrumentation -- remove once the knob's
+    # position/play-state lag is root-caused. See coordinator-reports/pc-dash.md.
+    now_playing = pc_state.get("nowPlaying") or {}
+    print(
+        f"PCSTATE GET device={device_id} isPlaying={pc_state.get('nowPlayingIsPlaying')} "
+        f"positionMs={now_playing.get('positionMs')}",
+        flush=True,
+    )
     return _device_state(device_id, settings, pc_state, macro_state, doc["lastSeenAt"])
 
 
@@ -235,6 +243,15 @@ async def update_device_state(device_id: str, update: SettingsUpdate):
     last_seen_at = doc["lastSeenAt"]
     if update.pcState is not None:
         pc_update = update.pcState.model_dump(exclude_unset=True)
+        # Temporary T25 debug instrumentation -- remove once the knob's
+        # position/play-state lag is root-caused. See coordinator-reports/pc-dash.md.
+        is_playing_in = pc_update.get("nowPlayingIsPlaying", "n/a")
+        now_playing_in = pc_update.get("nowPlaying")
+        position_in = now_playing_in.get("positionMs", "n/a") if now_playing_in is not None else "n/a"
+        print(
+            f"PCSTATE PUT device={device_id} isPlaying={is_playing_in} positionMs={position_in}",
+            flush=True,
+        )
         _deep_merge(pc_state, pc_update)
         last_seen_at = datetime.now(timezone.utc).isoformat()
 
