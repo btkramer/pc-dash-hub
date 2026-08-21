@@ -225,7 +225,8 @@ async def get_device_state(device_id: str):
     now_playing = pc_state.get("nowPlaying") or {}
     print(
         f"PCSTATE GET device={device_id} isPlaying={pc_state.get('nowPlayingIsPlaying')} "
-        f"positionMs={now_playing.get('positionMs')}",
+        f"positionMs={now_playing.get('positionMs')} "
+        f"volumePercent={pc_state.get('volumePercent')} speakerMuted={pc_state.get('speakerMuted')}",
         flush=True,
     )
     return _device_state(device_id, settings, pc_state, macro_state, doc["lastSeenAt"])
@@ -248,8 +249,11 @@ async def update_device_state(device_id: str, update: SettingsUpdate):
         is_playing_in = pc_update.get("nowPlayingIsPlaying", "n/a")
         now_playing_in = pc_update.get("nowPlaying")
         position_in = now_playing_in.get("positionMs", "n/a") if now_playing_in is not None else "n/a"
+        volume_in = pc_update.get("volumePercent", "n/a")
+        muted_in = pc_update.get("speakerMuted", "n/a")
         print(
-            f"PCSTATE PUT device={device_id} isPlaying={is_playing_in} positionMs={position_in}",
+            f"PCSTATE PUT device={device_id} isPlaying={is_playing_in} positionMs={position_in} "
+            f"volumePercent={volume_in} speakerMuted={muted_in}",
             flush=True,
         )
         _deep_merge(pc_state, pc_update)
