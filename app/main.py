@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 load_dotenv()
 
@@ -66,18 +66,25 @@ class LightRequest(BaseModel):
         return self
 
 
-class TimeoutsUpdate(BaseModel):
+class StrictModel(BaseModel):
+    # T31: a misshapen request body (e.g. a stray wrapper key) otherwise
+    # validates fine and silently drops every real field instead of
+    # erroring -- reject unrecognized fields instead of ignoring them.
+    model_config = ConfigDict(extra="forbid")
+
+
+class TimeoutsUpdate(StrictModel):
     volumeFuseMs: int | None = None
     idleToHomeMs: int | None = None
 
 
-class WeatherUpdate(BaseModel):
+class WeatherUpdate(StrictModel):
     zip: str | None = None
     units: str | None = None
     apiKey: str | None = None
 
 
-class NowPlayingUpdate(BaseModel):
+class NowPlayingUpdate(StrictModel):
     title: str | None = None
     artist: str | None = None
     source: str | None = None
@@ -85,7 +92,7 @@ class NowPlayingUpdate(BaseModel):
     durationMs: int | None = None
 
 
-class PcStateUpdate(BaseModel):
+class PcStateUpdate(StrictModel):
     volumePercent: int | None = Field(default=None, ge=0, le=100)
     speakerMuted: bool | None = None
     nowPlayingIsPlaying: bool | None = None
@@ -101,7 +108,7 @@ class MacroDefinition(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class SettingsUpdate(BaseModel):
+class SettingsUpdate(StrictModel):
     timeouts: TimeoutsUpdate | None = None
     weather: WeatherUpdate | None = None
     clockFaceId: str | None = None
