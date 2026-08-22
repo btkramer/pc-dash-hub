@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 load_dotenv()
@@ -25,6 +26,8 @@ DEVICES_DIR = DATA_DIR / "devices"
 PC_STATE_STALE_AFTER_SECONDS = int(os.environ.get("PC_STATE_STALE_AFTER_SECONDS", "12"))
 
 DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "timeouts": {"volumeFuseMs": 5000, "idleToHomeMs": 30000},
@@ -189,6 +192,35 @@ def _device_state(device_id: str, settings: dict, pc_state: dict, macro_state: d
 @app.get("/health")
 async def health():
     return {"ok": True}
+
+
+@app.get("/")
+async def deck_ui():
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/light")
+async def get_light():
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(
+                f"{HA_URL}/api/states/{HA_LIGHT_ENTITY}",
+                headers={"Authorization": f"Bearer {HA_TOKEN}"},
+                timeout=10,
+            )
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail=f"could not reach Home Assistant: {exc}")
+
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Home Assistant error: {resp.status_code} {resp.text}")
+
+    data = resp.json()
+    attrs = data.get("attributes", {})
+    return {
+        "on": data.get("state") == "on",
+        "brightness": attrs.get("brightness"),
+        "color_temp_kelvin": attrs.get("color_temp_kelvin"),
+    }
 
 
 @app.post("/light")

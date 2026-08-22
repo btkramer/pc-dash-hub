@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>PC Dash Deck</title>
+<style>
+  :root {
+    --bg: #0B0A10;
+    --surface: #17151F;
+    --surface-2: #1F1C29;
+    --ink: #F2EFE9;
+    --ink-dim: #8D87A0;
+    --ink-faint: #5B5568;
+    --border: #3a3650;
+    --warm: #F0A24E;
+    --cool: #5BC2E0;
+    --violet: #B39CFF;
+    --critical: #FF6B78;
+    --success: #6FBF8B;
+    --font-sans: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  #screens {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+  }
+  #screens::-webkit-scrollbar { display: none; }
+
+  .screen {
+    flex: 0 0 100%;
+    width: 100%;
+    height: 100%;
+    scroll-snap-align: start;
+    display: flex;
+    flex-direction: column;
+    padding: 3vh 3vw 1vh;
+    overflow: hidden;
+  }
+
+  .screen-label {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 1.2vh;
+  }
+
+  /* ---------- pager dots ---------- */
+  .pager {
+    display: flex;
+    justify-content: center;
+    gap: 7px;
+    padding: 1.2vh 0 0;
+  }
+  .pager .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ink-faint);
+    opacity: 0.5;
+    transition: all 0.15s ease;
+  }
+  .pager .dot.active {
+    background: var(--warm);
+    opacity: 1;
+    width: 20px;
+    border-radius: 4px;
+  }
+
+  /* ---------- macro grid ---------- */
+  .grid-btns {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 1.4vh 1.2vw;
+    flex: 1;
+    min-height: 0;
+  }
+  .macro-btn {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: transparent;
+    color: var(--ink);
+    font-size: 0.8rem;
+    padding: 6px;
+    text-align: center;
+    font-family: var(--font-sans);
+    line-height: 1.25;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    opacity: 0.4;
+  }
+  .macro-btn .icon { font-size: 1.5rem; }
+  .macro-btn .sub {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--ink-dim);
+  }
+  .macro-note {
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.05em;
+    color: var(--ink-faint);
+    margin-top: 0.8vh;
+  }
+
+  /* ---------- light screen ---------- */
+  .light-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2.4vh;
+    max-width: 480px;
+    width: 100%;
+    margin: 0 auto;
+  }
+  .light-toprow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .light-name { font-size: 1rem; font-weight: 600; }
+  .switch {
+    width: 44px;
+    height: 24px;
+    border-radius: 999px;
+    background: var(--border);
+    position: relative;
+    transition: background 0.15s ease;
+    flex: 0 0 auto;
+  }
+  .switch.on { background: var(--warm); }
+  .switch::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    transition: left 0.15s ease;
+  }
+  .switch.on::after { left: 23px; }
+
+  .slider-row label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.7rem;
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+    margin-bottom: 0.8vh;
+  }
+  input[type="range"] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 999px;
+    outline: none;
+  }
+  input[type="range"].warmth {
+    background: linear-gradient(90deg, var(--cool), var(--warm));
+  }
+  input[type="range"].brightness {
+    background: var(--surface-2);
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+    cursor: pointer;
+  }
+  input[type="range"]:disabled { opacity: 0.35; }
+
+  .light-status {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    color: var(--ink-faint);
+    text-align: center;
+    min-height: 1em;
+  }
+
+  /* ---------- scenes screen ---------- */
+  .scene-list { display: flex; flex-direction: column; gap: 1vh; flex: 1; justify-content: center; max-width: 420px; width: 100%; margin: 0 auto; }
+  .scene-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 0.82rem;
+    color: var(--ink);
+    opacity: 0.4;
+  }
+  .scene-btn .swatch { width: 20px; height: 20px; border-radius: 6px; flex: 0 0 auto; }
+
+  /* ---------- stub / coming-soon ---------- */
+  .stub {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.8vh;
+    color: var(--ink-faint);
+  }
+  .stub .stub-icon { font-size: 2rem; opacity: 0.5; }
+  .stub .stub-text { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.04em; }
+</style>
+</head>
+<body>
+
+<div id="screens">
+
+  <!-- 1: macro grid -->
+  <section class="screen" id="screen-macros">
+    <p class="screen-label">Macros</p>
+    <div class="grid-btns">
+      <div class="macro-btn"><span class="icon">🎙️</span><span>Mute mic</span></div>
+      <div class="macro-btn"><span class="icon">⏯️</span><span>Play / pause</span></div>
+      <div class="macro-btn"><span class="icon">📷</span><span>Screenshot</span><span class="sub">window</span></div>
+      <div class="macro-btn"><span class="icon">◉</span><span>Scene: Focus</span></div>
+      <div class="macro-btn"><span class="icon">🔄</span><span>Discord mute</span></div>
+      <div class="macro-btn"><span class="icon">💡</span><span>Desk light</span></div>
+      <div class="macro-btn"><span class="icon">🎬</span><span>OBS scene A</span></div>
+      <div class="macro-btn"><span class="icon">🏠</span><span>Scene: Away</span></div>
+    </div>
+    <p class="macro-note">macro execution not wired yet</p>
+  </section>
+
+  <!-- 2: light control (real) -->
+  <section class="screen" id="screen-light">
+    <p class="screen-label">Light</p>
+    <div class="light-body">
+      <div class="light-toprow">
+        <span class="light-name">Desk light</span>
+        <div class="switch" id="light-switch"></div>
+      </div>
+      <div class="slider-row">
+        <label><span>Warmth</span><span id="warmth-val">—</span></label>
+        <input type="range" class="warmth" id="warmth-slider" min="2700" max="6500" step="100" disabled>
+      </div>
+      <div class="slider-row">
+        <label><span>Brightness</span><span id="brightness-val">—</span></label>
+        <input type="range" class="brightness" id="brightness-slider" min="0" max="255" step="1" disabled>
+      </div>
+      <p class="light-status" id="light-status"></p>
+    </div>
+  </section>
+
+  <!-- 3: scenes (stub) -->
+  <section class="screen" id="screen-scenes">
+    <p class="screen-label">Scenes</p>
+    <div class="scene-list">
+      <div class="scene-btn"><span class="swatch" style="background:var(--warm);"></span>Focus</div>
+      <div class="scene-btn"><span class="swatch" style="background:var(--violet);"></span>Movie night</div>
+      <div class="scene-btn"><span class="swatch" style="background:var(--cool);"></span>Away</div>
+    </div>
+    <p class="macro-note">scenes not built yet</p>
+  </section>
+
+  <!-- 4: notifications / status (stub) -->
+  <section class="screen" id="screen-status">
+    <p class="screen-label">Status</p>
+    <div class="stub">
+      <span class="stub-icon">🔔</span>
+      <span class="stub-text">notifications &amp; status — coming soon</span>
+    </div>
+  </section>
+
+</div>
+
+<div class="pager">
+  <span class="dot active" data-index="0"></span>
+  <span class="dot" data-index="1"></span>
+  <span class="dot" data-index="2"></span>
+  <span class="dot" data-index="3"></span>
+</div>
+
+<script>
+(function () {
+  const screensEl = document.getElementById('screens');
+  const dots = Array.from(document.querySelectorAll('.pager .dot'));
+
+  function setActive(index) {
+    dots.forEach((d, i) => d.classList.toggle('active', i === index));
+  }
+
+  let scrollTimer = null;
+  screensEl.addEventListener('scroll', () => {
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(() => {
+      const index = Math.round(screensEl.scrollLeft / screensEl.clientWidth);
+      setActive(index);
+    }, 60);
+  }, { passive: true });
+
+  dots.forEach((dot) => {
+    dot.addEventListener('click', () => {
+      const index = Number(dot.dataset.index);
+      screensEl.scrollTo({ left: index * screensEl.clientWidth, behavior: 'smooth' });
+    });
+  });
+
+  window.addEventListener('resize', () => {
+    const index = dots.findIndex((d) => d.classList.contains('active'));
+    screensEl.scrollTo({ left: index * screensEl.clientWidth, behavior: 'instant' });
+  });
+
+  // ---------------- Light control (real, talks to this hub's /light) ----------------
+  const lightSwitch = document.getElementById('light-switch');
+  const warmthSlider = document.getElementById('warmth-slider');
+  const brightnessSlider = document.getElementById('brightness-slider');
+  const warmthVal = document.getElementById('warmth-val');
+  const brightnessVal = document.getElementById('brightness-val');
+  const lightStatus = document.getElementById('light-status');
+
+  let lightOn = false;
+  let suppressSliderPost = true;
+
+  function renderLightState(state) {
+    lightOn = !!state.on;
+    lightSwitch.classList.toggle('on', lightOn);
+    if (typeof state.brightness === 'number') {
+      brightnessSlider.value = state.brightness;
+      brightnessVal.textContent = Math.round((state.brightness / 255) * 100) + '%';
+    } else {
+      brightnessVal.textContent = '—';
+    }
+    if (typeof state.color_temp_kelvin === 'number') {
+      warmthSlider.value = state.color_temp_kelvin;
+      warmthVal.textContent = state.color_temp_kelvin + 'K';
+    } else {
+      warmthVal.textContent = '—';
+    }
+    warmthSlider.disabled = false;
+    brightnessSlider.disabled = false;
+  }
+
+  function setStatus(text, isError) {
+    lightStatus.textContent = text || '';
+    lightStatus.style.color = isError ? 'var(--critical)' : 'var(--ink-faint)';
+  }
+
+  async function fetchLightState() {
+    try {
+      const resp = await fetch('/light');
+      if (!resp.ok) throw new Error('status ' + resp.status);
+      const state = await resp.json();
+      renderLightState(state);
+      setStatus('');
+    } catch (err) {
+      setStatus('could not reach light', true);
+    } finally {
+      suppressSliderPost = false;
+    }
+  }
+
+  async function postLight(body) {
+    try {
+      const resp = await fetch('/light', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) throw new Error('status ' + resp.status);
+      setStatus('');
+    } catch (err) {
+      setStatus('command failed', true);
+    }
+  }
+
+  lightSwitch.addEventListener('click', () => {
+    lightOn = !lightOn;
+    lightSwitch.classList.toggle('on', lightOn);
+    postLight({ on: lightOn });
+  });
+
+  let warmthDebounce = null;
+  warmthSlider.addEventListener('input', () => {
+    warmthVal.textContent = warmthSlider.value + 'K';
+    if (suppressSliderPost) return;
+    clearTimeout(warmthDebounce);
+    warmthDebounce = setTimeout(() => {
+      postLight({ color_temp_kelvin: Number(warmthSlider.value) });
+    }, 200);
+  });
+
+  let brightnessDebounce = null;
+  brightnessSlider.addEventListener('input', () => {
+    brightnessVal.textContent = Math.round((brightnessSlider.value / 255) * 100) + '%';
+    if (suppressSliderPost) return;
+    clearTimeout(brightnessDebounce);
+    brightnessDebounce = setTimeout(() => {
+      postLight({ brightness: Number(brightnessSlider.value) });
+    }, 200);
+  });
+
+  fetchLightState();
+})();
+</script>
+
+</body>
+</html>
