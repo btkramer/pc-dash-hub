@@ -44,6 +44,8 @@ DEFAULT_PC_STATE: dict[str, Any] = {
     "speakerMuted": None,
     "nowPlayingIsPlaying": None,
     "nowPlaying": None,
+    "utcOffsetMinutes": None,
+    "timeZoneName": None,
 }
 
 # Mutable per-macro runtime state (e.g. screenshot.capture's live capture
@@ -101,6 +103,12 @@ class PcStateUpdate(StrictModel):
     speakerMuted: bool | None = None
     nowPlayingIsPlaying: bool | None = None
     nowPlaying: NowPlayingUpdate | None = None
+    # T44: signed minutes east of UTC (e.g. -420 for Phoenix) — offset-based
+    # rather than a POSIX TZ string so neither this hub nor the knob has to
+    # implement DST rules; pc-dash-app self-corrects it on every report.
+    utcOffsetMinutes: int | None = None
+    # Windows' Standard/Daylight display name -- cosmetic only, not parsed.
+    timeZoneName: str | None = None
 
 
 class MacroDefinition(BaseModel):
