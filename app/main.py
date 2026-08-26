@@ -30,7 +30,7 @@ DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 STATIC_DIR = Path(__file__).parent / "static"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "timeouts": {"volumeFuseMs": 5000, "idleToHomeMs": 30000},
+    "timeouts": {"volumeFuseMs": 5000, "idleToHomeMs": 30000, "dimDelayMs": 15000},
     "weather": {"zip": "", "units": "F", "apiKey": ""},
     "clockFaceId": None,
     "buzzerEnabled": True,
@@ -79,6 +79,7 @@ class StrictModel(BaseModel):
 class TimeoutsUpdate(StrictModel):
     volumeFuseMs: int | None = None
     idleToHomeMs: int | None = None
+    dimDelayMs: int | None = None
 
 
 class WeatherUpdate(StrictModel):
