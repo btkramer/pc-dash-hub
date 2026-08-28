@@ -131,7 +131,12 @@ class LogoAssignment(StrictModel):
     # assignment for this key, it doesn't patch it.
     kind: Literal["generic", "upload"]
     ref: str
-    initialsOverlay: str | None = None
+    # bool, not str -- corrected 2026-08-27 after pc-dash-app's real
+    # end-to-end test sent a JSON boolean and 422'd against the original
+    # str typing. The field name was relayed without a type from either
+    # side up front; bool is the actual toggle semantics (whether to
+    # overlay initials on the chosen logo) and matches every real caller.
+    initialsOverlay: bool | None = None
 
 
 class MacroDefinition(BaseModel):
@@ -213,6 +218,17 @@ def _save_logo_index(index: dict[str, dict]) -> None:
 
 def _logo_blob_path(logo_id: str) -> Path:
     return LOGOS_DIR / f"{logo_id}.bin"
+
+
+def _logo_public_entry(entry: dict) -> dict:
+    # url is derived, not stored -- host-agnostic and correct even for
+    # entries written before this field existed. fileName defaults to
+    # None the same way for entries uploaded before it was captured.
+    return {
+        **entry,
+        "url": f"/api/logos/{entry['id']}",
+        "fileName": entry.get("fileName"),
+    }
 
 
 def _logo_assignment_path(key: str) -> Path:
@@ -329,15 +345,16 @@ async def upload_logo(file: UploadFile):
             "contentType": file.content_type or "application/octet-stream",
             "sizeBytes": len(body),
             "createdAt": datetime.now(timezone.utc).isoformat(),
+            "fileName": file.filename,
         }
         _save_logo_index(index)
 
-    return index[logo_id]
+    return _logo_public_entry(index[logo_id])
 
 
 @app.get("/api/logos")
 async def list_logos():
-    return list(_load_logo_index().values())
+    return [_logo_public_entry(e) for e in _load_logo_index().values()]
 
 
 @app.get("/api/logos/{logo_id}")
