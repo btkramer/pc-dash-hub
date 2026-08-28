@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -7,8 +8,8 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 load_dotenv()
@@ -22,6 +23,11 @@ if not HA_URL or not HA_TOKEN:
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
 DEVICES_DIR = DATA_DIR / "devices"
+LOGOS_DIR = DATA_DIR / "logos"
+LOGOS_INDEX_PATH = LOGOS_DIR / "index.json"
+
+LOGO_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2MB -- generous for an icon/logo image
 
 PC_STATE_STALE_AFTER_SECONDS = int(os.environ.get("PC_STATE_STALE_AFTER_SECONDS", "12"))
 
@@ -177,6 +183,21 @@ def _save_device_doc(
     path.write_text(json.dumps(doc, indent=2))
 
 
+def _load_logo_index() -> dict[str, dict]:
+    if not LOGOS_INDEX_PATH.exists():
+        return {}
+    return json.loads(LOGOS_INDEX_PATH.read_text())
+
+
+def _save_logo_index(index: dict[str, dict]) -> None:
+    LOGOS_DIR.mkdir(parents=True, exist_ok=True)
+    LOGOS_INDEX_PATH.write_text(json.dumps(index, indent=2))
+
+
+def _logo_blob_path(logo_id: str) -> Path:
+    return LOGOS_DIR / f"{logo_id}.bin"
+
+
 def _device_state(device_id: str, settings: dict, pc_state: dict, macro_state: dict, last_seen_at: str | None) -> dict:
     if last_seen_at is None:
         seconds_ago = None
@@ -260,6 +281,51 @@ async def set_light(req: LightRequest):
         raise HTTPException(status_code=502, detail=f"Home Assistant error: {resp.status_code} {resp.text}")
 
     return {"ok": True, "service": service, "data": data}
+
+
+@app.post("/api/logos")
+async def upload_logo(file: UploadFile):
+    # T52: shared cross-project logo library. id = first 16 hex chars of the
+    # content's SHA-256, so identical uploads from any participant (or a
+    # re-upload of the same file) dedup onto the same id automatically --
+    # no separate "does this already exist" check needed by the caller.
+    body = await file.read()
+    if len(body) > LOGO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"logo exceeds {LOGO_MAX_BYTES} bytes")
+    if not body:
+        raise HTTPException(status_code=400, detail="empty upload")
+
+    logo_id = hashlib.sha256(body).hexdigest()[:16]
+    index = _load_logo_index()
+
+    if logo_id not in index:
+        LOGOS_DIR.mkdir(parents=True, exist_ok=True)
+        _logo_blob_path(logo_id).write_bytes(body)
+        index[logo_id] = {
+            "id": logo_id,
+            "contentType": file.content_type or "application/octet-stream",
+            "sizeBytes": len(body),
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+        _save_logo_index(index)
+
+    return index[logo_id]
+
+
+@app.get("/api/logos")
+async def list_logos():
+    return list(_load_logo_index().values())
+
+
+@app.get("/api/logos/{logo_id}")
+async def get_logo(logo_id: str):
+    if not LOGO_ID_RE.match(logo_id):
+        raise HTTPException(status_code=400, detail="invalid logo id")
+    entry = _load_logo_index().get(logo_id)
+    blob_path = _logo_blob_path(logo_id)
+    if entry is None or not blob_path.exists():
+        raise HTTPException(status_code=404, detail="logo not found")
+    return Response(content=blob_path.read_bytes(), media_type=entry["contentType"])
 
 
 @app.get("/api/devices/{device_id}/state")
