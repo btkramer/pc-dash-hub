@@ -41,15 +41,15 @@
   }
   #screens-track {
     display: flex;
-    width: 400%;
+    width: 500%;
     height: 100%;
     transition: transform 0.25s ease;
     touch-action: pan-y;
   }
 
   .screen {
-    flex: 0 0 25%;
-    width: 25%;
+    flex: 0 0 20%;
+    width: 20%;
     height: 100%;
     display: flex;
     flex-direction: column;
@@ -233,6 +233,146 @@
   }
   .scene-btn .swatch { width: 20px; height: 20px; border-radius: 6px; flex: 0 0 auto; }
 
+  /* ---------- session grid (T59, agent-monitor mode) ---------- */
+  /* State palette per the Agent Monitor mockup's design-of-record: color always
+     means state, never project -- a project is identified by name/logo only. */
+  .context-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.04em;
+    color: var(--ink-dim);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 9px 3px 7px;
+    margin-bottom: 1vh;
+  }
+  .context-pill .chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cool); }
+
+  .session-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 1.2vh 1.2vw;
+    flex: 1;
+    min-height: 0;
+  }
+  .session-tile {
+    position: relative;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    padding: 6px 7px 5px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .session-tile.focused { border-color: var(--tile-color, var(--ink-faint)); box-shadow: 0 0 0 1px var(--tile-color, var(--ink-faint)); }
+  .session-tile.empty { border-style: dashed; opacity: 0.4; align-items: center; justify-content: center; cursor: default; }
+  .session-tile .bar { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--tile-color, var(--ink-faint)); }
+  .session-tile .proj {
+    position: relative;
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: var(--ink);
+    padding-left: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .session-tile .st {
+    position: relative;
+    font-family: var(--font-mono);
+    font-size: 0.5rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--tile-color, var(--ink-faint));
+    padding-left: 4px;
+  }
+  .session-tile .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--tile-color, var(--ink-faint)); position: absolute; top: 6px; right: 6px; }
+  .session-tile .dot.pulse { animation: dotpulse 1.8s ease-in-out infinite; }
+  @keyframes dotpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .session-tile .stale-mark { position: absolute; top: 5px; left: 8px; font-size: 0.55rem; color: var(--ink-faint); }
+  .dev-eyebrow { font-family: var(--font-mono); font-size: 0.55rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
+
+  .tile-logo { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  .tile-logo img { width: 26px; height: 26px; object-fit: contain; border-radius: 6px; }
+  .tile-logo-fallback {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--ink-dim);
+    font-size: 0.85rem;
+  }
+  .tile-initials {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 0.58rem;
+    font-weight: 700;
+    color: var(--ink);
+    text-shadow: 0 1px 3px rgba(0,0,0,0.7);
+  }
+
+  .legend-hint {
+    position: absolute;
+    top: 1.2vh;
+    right: 3vw;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    color: var(--ink-faint);
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(11, 10, 16, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6vh 6vw;
+    z-index: 10;
+  }
+  .overlay.hidden { display: none; }
+  .overlay-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    width: 100%;
+    max-width: 340px;
+    max-height: 80%;
+    overflow-y: auto;
+  }
+  .legend-row { display: flex; align-items: center; gap: 8px; font-size: 0.7rem; padding: 5px 0; }
+  .legend-row .sw { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .legend-row .lbl { font-weight: 600; min-width: 5.5em; }
+  .legend-row .desc { color: var(--ink-faint); font-size: 0.65rem; }
+  .detail-row { display: flex; justify-content: space-between; font-size: 0.68rem; padding: 4px 0; border-bottom: 1px solid var(--surface-2); }
+  .detail-row .k { color: var(--ink-faint); font-family: var(--font-mono); font-size: 0.58rem; letter-spacing: 0.03em; }
+  .detail-title { font-size: 0.85rem; font-weight: 700; margin: 0 0 8px; }
+
   /* ---------- stub / coming-soon ---------- */
   .stub {
     flex: 1;
@@ -308,6 +448,14 @@
     </div>
   </section>
 
+  <!-- 5: agent-monitor session grid (T59) -->
+  <section class="screen" id="screen-sessions" style="position: relative;">
+    <p class="screen-label">Sessions</p>
+    <div class="context-pill"><span class="chip-dot"></span><span id="sessions-profile-pill">profile: claude code</span></div>
+    <div class="session-grid" id="session-grid"></div>
+    <div class="legend-hint" id="legend-hint">?</div>
+  </section>
+
 </div>
 </div>
 
@@ -316,6 +464,24 @@
   <span class="dot" data-index="1"></span>
   <span class="dot" data-index="2"></span>
   <span class="dot" data-index="3"></span>
+  <span class="dot" data-index="4"></span>
+</div>
+
+<!-- Legend overlay -->
+<div class="overlay hidden" id="legend-overlay">
+  <div class="overlay-panel">
+    <p class="detail-title">Session state</p>
+    <div class="legend-row"><span class="sw" style="background:var(--ink-dim);"></span><span class="lbl">idle</span><span class="desc">no active work</span></div>
+    <div class="legend-row"><span class="sw" style="background:var(--cool);"></span><span class="lbl">working</span><span class="desc">session executing</span></div>
+    <div class="legend-row"><span class="sw" style="background:var(--warm);"></span><span class="lbl">needs input</span><span class="desc">waiting on you</span></div>
+    <div class="legend-row"><span class="sw" style="background:var(--critical);"></span><span class="lbl">error</span><span class="desc">hook reported a failure</span></div>
+    <div class="legend-row"><span class="sw" style="background:var(--success);"></span><span class="lbl">done</span><span class="desc">finished, unreviewed</span></div>
+  </div>
+</div>
+
+<!-- Session detail overlay -->
+<div class="overlay hidden" id="session-detail-overlay">
+  <div class="overlay-panel" id="session-detail-panel"></div>
 </div>
 
 <script>
@@ -457,6 +623,198 @@
   });
 
   fetchLightState();
+
+  // ---------------- Session grid (T59, agent-monitor mode) ----------------
+  // Reads T57's GET /api/agent-sessions. Only renders fields that endpoint
+  // actually sends (agentProfile/status/project/timestamps) -- the mockup's
+  // subagent badges/agent-mark glyph/last-message preview aren't built here
+  // since T58's hook forwarder doesn't send that data yet (no hook wiring
+  // for Task-tool subagents, and prompt/response content is a deliberately
+  // unresolved privacy question per the mockup's own notes).
+  const MAX_TILES = 6; // fixed 3x2 grid, matches the Codex Micro/OpenMicro precedent the design is built on
+  const STATUS_COLOR = {
+    idle: 'var(--ink-dim)',
+    working: 'var(--cool)',
+    'needs-input': 'var(--warm)',
+    error: 'var(--critical)',
+    done: 'var(--success)',
+  };
+  const STATUS_LABEL = {
+    idle: 'idle',
+    working: 'working',
+    'needs-input': 'needs input',
+    error: 'error',
+    done: 'done',
+  };
+  // Same precedence used for the knob's aggregate far-glance color, reused
+  // here to order tiles worth-a-look-first.
+  const STATUS_PRIORITY = { error: 0, 'needs-input': 1, working: 2, done: 3, idle: 4 };
+
+  const sessionGrid = document.getElementById('session-grid');
+  const legendHint = document.getElementById('legend-hint');
+  const legendOverlay = document.getElementById('legend-overlay');
+  const detailOverlay = document.getElementById('session-detail-overlay');
+  const detailPanel = document.getElementById('session-detail-panel');
+  const profilePill = document.getElementById('sessions-profile-pill');
+
+  function initials(name) {
+    if (!name) return '?';
+    const parts = name.split(/[-_\s]+/).filter(Boolean);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+
+  const logoAssignmentCache = new Map(); // project -> assignment object | null (404), per render pass
+
+  async function fetchLogoAssignment(project) {
+    if (!project) return null;
+    if (logoAssignmentCache.has(project)) return logoAssignmentCache.get(project);
+    let result = null;
+    try {
+      const resp = await fetch('/api/logo-assignments/' + encodeURIComponent(project));
+      if (resp.ok) result = await resp.json();
+    } catch (err) {
+      result = null; // offline/error -- fall back to generic icon, same as an unset assignment
+    }
+    logoAssignmentCache.set(project, result);
+    return result;
+  }
+
+  function renderTileLogo(container, assignment, projectName) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tile-logo';
+    if (assignment && assignment.kind === 'upload' && assignment.ref) {
+      const img = document.createElement('img');
+      img.src = '/api/logos/' + encodeURIComponent(assignment.ref);
+      img.alt = '';
+      wrap.appendChild(img);
+    } else {
+      // kind === "generic" or no assignment: this hub doesn't have pc-dash-app's
+      // 8-icon generic set (T54) synced anywhere it can render from, so this is
+      // a placeholder glyph, not a match to whichever generic icon was actually
+      // picked -- flagged as an open item, see PROGRESS.md/coordinator-reports.
+      const fallback = document.createElement('div');
+      fallback.className = 'tile-logo-fallback';
+      fallback.textContent = '\u{1F4C1}'; // folder, same representative icon the mockup used
+      wrap.appendChild(fallback);
+    }
+    container.appendChild(wrap);
+    if (assignment && assignment.initialsOverlay) {
+      const ov = document.createElement('div');
+      ov.className = 'tile-initials';
+      ov.textContent = initials(projectName);
+      container.appendChild(ov);
+    }
+  }
+
+  function buildEmptyTile() {
+    const tile = document.createElement('div');
+    tile.className = 'session-tile empty';
+    tile.innerHTML = '<span class="dev-eyebrow">unassigned</span>';
+    return tile;
+  }
+
+  async function buildSessionTile(session) {
+    const tile = document.createElement('div');
+    const color = STATUS_COLOR[session.status] || STATUS_COLOR.idle;
+    tile.className = 'session-tile';
+    tile.style.setProperty('--tile-color', color);
+
+    const bar = document.createElement('span');
+    bar.className = 'bar';
+    tile.appendChild(bar);
+
+    const dot = document.createElement('span');
+    dot.className = 'dot' + (session.status === 'needs-input' ? ' pulse' : '');
+    tile.appendChild(dot);
+
+    if (session.stale) {
+      const staleMark = document.createElement('span');
+      staleMark.className = 'stale-mark';
+      staleMark.textContent = '⚠'; // hollow warning triangle -- crash/hard-kill safety net (no DELETE fired)
+      staleMark.title = 'no update in a while -- session may have exited without reporting';
+      tile.appendChild(staleMark);
+    }
+
+    const assignment = await fetchLogoAssignment(session.project);
+    renderTileLogo(tile, assignment, session.project);
+
+    const proj = document.createElement('span');
+    proj.className = 'proj';
+    proj.textContent = session.project || session.sessionId.slice(0, 8);
+    tile.appendChild(proj);
+
+    const st = document.createElement('span');
+    st.className = 'st';
+    st.textContent = STATUS_LABEL[session.status] || session.status;
+    tile.appendChild(st);
+
+    tile.addEventListener('click', () => showSessionDetail(session));
+    return tile;
+  }
+
+  function showSessionDetail(session) {
+    const color = STATUS_COLOR[session.status] || STATUS_COLOR.idle;
+    detailPanel.innerHTML = '';
+    const title = document.createElement('p');
+    title.className = 'detail-title';
+    title.style.color = color;
+    title.textContent = session.project || session.sessionId;
+    detailPanel.appendChild(title);
+    const rows = [
+      ['STATUS', STATUS_LABEL[session.status] || session.status],
+      ['AGENT', session.agentProfile || '—'],
+      ['SESSION ID', session.sessionId],
+      ['STARTED', session.startedAt || '—'],
+      ['LAST UPDATE', session.lastUpdateSecondsAgo === null || session.lastUpdateSecondsAgo === undefined
+        ? '—' : session.lastUpdateSecondsAgo + 's ago' + (session.stale ? ' (stale)' : '')],
+    ];
+    for (const [k, v] of rows) {
+      const row = document.createElement('div');
+      row.className = 'detail-row';
+      row.innerHTML = '<span class="k"></span><span class="v"></span>';
+      row.querySelector('.k').textContent = k;
+      row.querySelector('.v').textContent = v;
+      detailPanel.appendChild(row);
+    }
+    detailOverlay.classList.remove('hidden');
+  }
+
+  async function renderSessionGrid(sessions) {
+    logoAssignmentCache.clear(); // logo assignments can change between polls; don't carry stale reads forward
+    const sorted = sessions.slice().sort((a, b) => {
+      const pa = STATUS_PRIORITY[a.status] ?? 5;
+      const pb = STATUS_PRIORITY[b.status] ?? 5;
+      if (pa !== pb) return pa - pb;
+      return (b.lastUpdateSecondsAgo ?? 0) < (a.lastUpdateSecondsAgo ?? 0) ? 1 : -1;
+    });
+    const shown = sorted.slice(0, MAX_TILES);
+    const tiles = await Promise.all(shown.map(buildSessionTile));
+    sessionGrid.innerHTML = '';
+    tiles.forEach((t) => sessionGrid.appendChild(t));
+    for (let i = shown.length; i < MAX_TILES; i++) sessionGrid.appendChild(buildEmptyTile());
+
+    const profiles = [...new Set(sessions.map((s) => s.agentProfile).filter(Boolean))];
+    profilePill.textContent = 'profile: ' + (profiles.length ? profiles.join(', ') : 'claude code');
+  }
+
+  async function pollAgentSessions() {
+    try {
+      const resp = await fetch('/api/agent-sessions');
+      if (!resp.ok) return;
+      const sessions = await resp.json();
+      await renderSessionGrid(sessions);
+    } catch (err) {
+      // offline -- leave the last-rendered grid in place rather than clearing it
+    }
+  }
+
+  legendHint.addEventListener('click', () => legendOverlay.classList.remove('hidden'));
+  legendOverlay.addEventListener('click', (e) => { if (e.target === legendOverlay) legendOverlay.classList.add('hidden'); });
+  detailOverlay.addEventListener('click', (e) => { if (e.target === detailOverlay) detailOverlay.classList.add('hidden'); });
+
+  pollAgentSessions();
+  setInterval(pollAgentSessions, 5000); // same order of magnitude as pcState's own 5s report cadence
 })();
 </script>
 
