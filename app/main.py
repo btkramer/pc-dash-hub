@@ -4,7 +4,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from dotenv import load_dotenv
@@ -28,6 +28,14 @@ LOGOS_INDEX_PATH = LOGOS_DIR / "index.json"
 
 LOGO_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2MB -- generous for an icon/logo image
+
+LOGO_ASSIGNMENTS_DIR = DATA_DIR / "logo-assignments"
+# T52: same charset as DEVICE_ID_RE, but kept as its own constant -- this key
+# is deliberately opaque to this service (a pc-dash-app device id today, some
+# future agent-monitor-mode project id later, anything else down the line).
+# See coordinator-reports/pc-dash.md's 2026-08-27 T52 entry for why this
+# isn't a `/api/projects/{project_id}/logo`-shaped endpoint.
+LOGO_ASSIGNMENT_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 PC_STATE_STALE_AFTER_SECONDS = int(os.environ.get("PC_STATE_STALE_AFTER_SECONDS", "12"))
 
@@ -117,6 +125,15 @@ class PcStateUpdate(StrictModel):
     timeZoneName: str | None = None
 
 
+class LogoAssignment(StrictModel):
+    # T52: whole-object PUT (unlike SettingsUpdate/PcStateUpdate's
+    # field-merge semantics) -- a PUT here fully replaces any prior
+    # assignment for this key, it doesn't patch it.
+    kind: Literal["generic", "upload"]
+    ref: str
+    initialsOverlay: str | None = None
+
+
 class MacroDefinition(BaseModel):
     id: str
     label: str
@@ -196,6 +213,12 @@ def _save_logo_index(index: dict[str, dict]) -> None:
 
 def _logo_blob_path(logo_id: str) -> Path:
     return LOGOS_DIR / f"{logo_id}.bin"
+
+
+def _logo_assignment_path(key: str) -> Path:
+    if not LOGO_ASSIGNMENT_KEY_RE.match(key):
+        raise HTTPException(status_code=400, detail="invalid logo-assignment key")
+    return LOGO_ASSIGNMENTS_DIR / f"{key}.json"
 
 
 def _device_state(device_id: str, settings: dict, pc_state: dict, macro_state: dict, last_seen_at: str | None) -> dict:
@@ -326,6 +349,23 @@ async def get_logo(logo_id: str):
     if entry is None or not blob_path.exists():
         raise HTTPException(status_code=404, detail="logo not found")
     return Response(content=blob_path.read_bytes(), media_type=entry["contentType"])
+
+
+@app.get("/api/logo-assignments/{key}")
+async def get_logo_assignment(key: str):
+    path = _logo_assignment_path(key)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="no logo assignment for this key")
+    return json.loads(path.read_text())
+
+
+@app.put("/api/logo-assignments/{key}")
+async def put_logo_assignment(key: str, assignment: LogoAssignment):
+    path = _logo_assignment_path(key)
+    LOGO_ASSIGNMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    doc = assignment.model_dump()
+    path.write_text(json.dumps(doc, indent=2))
+    return doc
 
 
 @app.get("/api/devices/{device_id}/state")
