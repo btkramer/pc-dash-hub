@@ -41,6 +41,30 @@ PC_STATE_STALE_AFTER_SECONDS = int(os.environ.get("PC_STATE_STALE_AFTER_SECONDS"
 
 DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# T57: agent-monitor mode session storage. Global (not per-device) -- unlike
+# pcState/settings, sessions aren't tied to a knob; they're tracked
+# independently and rendered on the phone session grid (T59). Same
+# index-file pattern as logos (_load_logo_index/_save_logo_index).
+AGENT_SESSIONS_DIR = DATA_DIR / "agent-sessions"
+AGENT_SESSIONS_INDEX_PATH = AGENT_SESSIONS_DIR / "index.json"
+AGENT_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Sessions update on real hook events, not a fixed poll cadence like
+# pcState's 5s loop -- default threshold is looser than
+# PC_STATE_STALE_AFTER_SECONDS accordingly. Proposed, not yet confirmed
+# against pc-dash-app's actual hook-forwarding cadence.
+AGENT_SESSION_STALE_AFTER_SECONDS = int(os.environ.get("AGENT_SESSION_STALE_AFTER_SECONDS", "120"))
+
+DEFAULT_AGENT_SESSION: dict[str, Any] = {
+    # Which agent tool's protocol this session speaks -- free string
+    # (not a Literal) so a future profile (e.g. "codex-cli") needs zero
+    # schema change here, per T57's "extensible without a redesign" ask.
+    "agentProfile": None,
+    "status": "idle",
+    "project": None,
+    "startedAt": None,
+    "updatedAt": None,
+}
+
 STATIC_DIR = Path(__file__).parent / "static"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -123,6 +147,20 @@ class PcStateUpdate(StrictModel):
     utcOffsetMinutes: int | None = None
     # Windows' Standard/Daylight display name -- cosmetic only, not parsed.
     timeZoneName: str | None = None
+
+
+AgentSessionStatus = Literal["idle", "working", "needs-input", "error", "done"]
+
+
+class AgentSessionUpdate(StrictModel):
+    # T57: partial update, deep-merged into the stored entry -- same
+    # exclude_unset/omit-vs-explicit-null semantics as PcStateUpdate.
+    # updatedAt is server-stamped (like pcState's lastSeenAt), not
+    # client-settable.
+    agentProfile: str | None = None
+    status: AgentSessionStatus | None = None
+    project: str | None = None
+    startedAt: str | None = None
 
 
 class LogoAssignment(StrictModel):
@@ -235,6 +273,39 @@ def _logo_assignment_path(key: str) -> Path:
     if not LOGO_ASSIGNMENT_KEY_RE.match(key):
         raise HTTPException(status_code=400, detail="invalid logo-assignment key")
     return LOGO_ASSIGNMENTS_DIR / f"{key}.json"
+
+
+def _load_agent_sessions_index() -> dict[str, dict]:
+    if not AGENT_SESSIONS_INDEX_PATH.exists():
+        return {}
+    return json.loads(AGENT_SESSIONS_INDEX_PATH.read_text())
+
+
+def _save_agent_sessions_index(index: dict[str, dict]) -> None:
+    AGENT_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    AGENT_SESSIONS_INDEX_PATH.write_text(json.dumps(index, indent=2))
+
+
+def _validate_session_id(session_id: str) -> None:
+    if not AGENT_SESSION_ID_RE.match(session_id):
+        raise HTTPException(status_code=400, detail="invalid session_id")
+
+
+def _agent_session_public_entry(session_id: str, entry: dict) -> dict:
+    updated_at = entry.get("updatedAt")
+    if updated_at is None:
+        seconds_ago = None
+        stale = True
+    else:
+        seen = datetime.fromisoformat(updated_at)
+        seconds_ago = (datetime.now(timezone.utc) - seen).total_seconds()
+        stale = seconds_ago >= AGENT_SESSION_STALE_AFTER_SECONDS
+    return {
+        "sessionId": session_id,
+        **entry,
+        "lastUpdateSecondsAgo": None if seconds_ago is None else round(seconds_ago),
+        "stale": stale,
+    }
 
 
 def _device_state(device_id: str, settings: dict, pc_state: dict, macro_state: dict, last_seen_at: str | None) -> dict:
@@ -383,6 +454,58 @@ async def put_logo_assignment(key: str, assignment: LogoAssignment):
     doc = assignment.model_dump()
     path.write_text(json.dumps(doc, indent=2))
     return doc
+
+
+@app.get("/api/agent-sessions")
+async def list_agent_sessions():
+    # T57: feeds the phone session-grid UI (T59).
+    index = _load_agent_sessions_index()
+    return [_agent_session_public_entry(sid, entry) for sid, entry in index.items()]
+
+
+@app.get("/api/agent-sessions/{session_id}")
+async def get_agent_session(session_id: str):
+    _validate_session_id(session_id)
+    index = _load_agent_sessions_index()
+    entry = index.get(session_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="no agent session for this id")
+    return _agent_session_public_entry(session_id, entry)
+
+
+@app.put("/api/agent-sessions/{session_id}")
+async def put_agent_session(session_id: str, update: AgentSessionUpdate):
+    # T57: deep-merge partial update, same pattern as pcState/settings --
+    # omitting a field leaves its last-known value untouched, explicit
+    # null clears it. session_id is caller-chosen (pc-dash-app mints it
+    # from the real Claude Code session id) and used as the storage key.
+    _validate_session_id(session_id)
+    index = _load_agent_sessions_index()
+    is_new = session_id not in index
+    entry = _with_defaults(DEFAULT_AGENT_SESSION, index.get(session_id, {}))
+    update_fields = update.model_dump(exclude_unset=True)
+    _deep_merge(entry, update_fields)
+    now = datetime.now(timezone.utc).isoformat()
+    entry["updatedAt"] = now
+    if is_new and entry.get("startedAt") is None:
+        entry["startedAt"] = now
+    index[session_id] = entry
+    _save_agent_sessions_index(index)
+    return _agent_session_public_entry(session_id, entry)
+
+
+@app.delete("/api/agent-sessions/{session_id}")
+async def delete_agent_session(session_id: str):
+    # Explicit removal for when a session truly ends (process exit) --
+    # built from the start this time; T52's logo-assignments launched
+    # without one and it left orphaned test data with no cleanup path.
+    _validate_session_id(session_id)
+    index = _load_agent_sessions_index()
+    if session_id not in index:
+        raise HTTPException(status_code=404, detail="no agent session for this id")
+    del index[session_id]
+    _save_agent_sessions_index(index)
+    return {"ok": True}
 
 
 @app.get("/api/devices/{device_id}/state")
