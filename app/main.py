@@ -67,6 +67,15 @@ DEFAULT_AGENT_SESSION: dict[str, Any] = {
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# T63: generic-icon vocabulary. pc-dash-app owns the list (its WPF picker
+# authors the SVGs); this hub bundles them as in-repo static assets and
+# serves them -- deliberately NOT via /api/logos (content-hash ids drift on
+# re-export) and NOT an external dep (kiosk). Vocabulary additions (T54)
+# arrive name + SVG through the coordinator. See
+# coordinator-reports/pc-dash.md's 2026-08-28 T63 entries.
+GENERIC_ICONS_DIR = Path(__file__).parent / "generic-icons"
+GENERIC_ICON_NAME_RE = re.compile(r"^[a-z0-9-]+$")
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "timeouts": {"volumeFuseMs": 5000, "idleToHomeMs": 30000, "dimDelayMs": 60000},
     "weather": {"zip": "", "units": "F", "apiKey": ""},
@@ -437,6 +446,29 @@ async def get_logo(logo_id: str):
     if entry is None or not blob_path.exists():
         raise HTTPException(status_code=404, detail="logo not found")
     return Response(content=blob_path.read_bytes(), media_type=entry["contentType"])
+
+
+@app.get("/api/generic-icons")
+async def list_generic_icons():
+    # T63: the generic-icon vocabulary this hub can render. Not a pc-dash-app
+    # producer dependency (its picker renders locally) -- exposed for hub-side
+    # validation and so a future tool can discover what's available.
+    if not GENERIC_ICONS_DIR.is_dir():
+        return []
+    return sorted(p.stem for p in GENERIC_ICONS_DIR.glob("*.svg"))
+
+
+@app.get("/api/generic-icons/{name}")
+async def get_generic_icon(name: str):
+    # T63: bundled SVG for a `kind:"generic"` logo assignment's `ref`.
+    # Unknown name -> 404; the session-grid renderer falls back to the
+    # folder glyph on 404, so an out-of-sync vocabulary degrades, never breaks.
+    if not GENERIC_ICON_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="invalid generic-icon name")
+    path = GENERIC_ICONS_DIR / f"{name}.svg"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="generic icon not found")
+    return Response(content=path.read_bytes(), media_type="image/svg+xml")
 
 
 @app.get("/api/logo-assignments/{key}")

@@ -302,6 +302,8 @@
 
   .tile-logo { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
   .tile-logo img { width: 26px; height: 26px; object-fit: contain; border-radius: 6px; }
+  .tile-logo .tile-generic-icon { width: 24px; height: 24px; color: var(--ink-dim); display: flex; }
+  .tile-logo .tile-generic-icon svg { width: 100%; height: 100%; }
   .tile-logo-fallback {
     width: 24px;
     height: 24px;
@@ -680,23 +682,55 @@
     return result;
   }
 
-  function renderTileLogo(container, assignment, projectName) {
+  const genericIconCache = new Map(); // name -> svg text | null (missing/404); bundled assets, safe to cache across polls
+
+  async function fetchGenericIcon(name) {
+    if (!name) return null;
+    if (genericIconCache.has(name)) return genericIconCache.get(name);
+    let svg = null;
+    try {
+      const resp = await fetch('/api/generic-icons/' + encodeURIComponent(name));
+      if (resp.ok) svg = await resp.text();
+    } catch (err) {
+      svg = null; // offline/error -- fall through to the folder glyph
+    }
+    genericIconCache.set(name, svg);
+    return svg;
+  }
+
+  function folderFallback() {
+    const fallback = document.createElement('div');
+    fallback.className = 'tile-logo-fallback';
+    fallback.textContent = '\u{1F4C1}'; // folder, same representative glyph the mockup used
+    return fallback;
+  }
+
+  async function renderTileLogo(container, assignment, projectName) {
     const wrap = document.createElement('div');
     wrap.className = 'tile-logo';
     if (assignment && assignment.kind === 'upload' && assignment.ref) {
       const img = document.createElement('img');
       img.src = '/api/logos/' + encodeURIComponent(assignment.ref);
       img.alt = '';
+      img.addEventListener('error', () => img.replaceWith(folderFallback()));
       wrap.appendChild(img);
+    } else if (assignment && assignment.kind === 'generic' && assignment.ref) {
+      // T63: the hub bundles pc-dash-app's generic-icon vocabulary as static
+      // SVGs and serves them at /api/generic-icons/{ref}. Inline the SVG so its
+      // stroke="currentColor" inherits the tile's theme color. An unknown ref
+      // 404s -> folder fallback, so vocabulary drift degrades, never breaks.
+      const svg = await fetchGenericIcon(assignment.ref);
+      if (svg) {
+        const holder = document.createElement('div');
+        holder.className = 'tile-generic-icon';
+        holder.innerHTML = svg;
+        wrap.appendChild(holder);
+      } else {
+        wrap.appendChild(folderFallback());
+      }
     } else {
-      // kind === "generic" or no assignment: this hub doesn't have pc-dash-app's
-      // 8-icon generic set (T54) synced anywhere it can render from, so this is
-      // a placeholder glyph, not a match to whichever generic icon was actually
-      // picked -- flagged as an open item, see PROGRESS.md/coordinator-reports.
-      const fallback = document.createElement('div');
-      fallback.className = 'tile-logo-fallback';
-      fallback.textContent = '\u{1F4C1}'; // folder, same representative icon the mockup used
-      wrap.appendChild(fallback);
+      // no assignment at all
+      wrap.appendChild(folderFallback());
     }
     container.appendChild(wrap);
     if (assignment && assignment.initialsOverlay) {
@@ -737,7 +771,7 @@
     }
 
     const assignment = await fetchLogoAssignment(session.project);
-    renderTileLogo(tile, assignment, session.project);
+    await renderTileLogo(tile, assignment, session.project);
 
     const proj = document.createElement('span');
     proj.className = 'proj';
