@@ -375,6 +375,21 @@
   .detail-row .k { color: var(--ink-faint); font-family: var(--font-mono); font-size: 0.58rem; letter-spacing: 0.03em; }
   .detail-title { font-size: 0.85rem; font-weight: 700; margin: 0 0 8px; }
 
+  /* ---------- idle dim (T78) ---------- */
+  #idle-dim-overlay {
+    position: fixed;
+    inset: 0;
+    background: #000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.6s ease;
+    z-index: 20;
+  }
+  #idle-dim-overlay.active {
+    opacity: 0.94;
+    pointer-events: auto;
+  }
+
   /* ---------- stub / coming-soon ---------- */
   .stub {
     flex: 1;
@@ -485,6 +500,9 @@
 <div class="overlay hidden" id="session-detail-overlay">
   <div class="overlay-panel" id="session-detail-panel"></div>
 </div>
+
+<!-- Idle dim overlay (T78) -->
+<div id="idle-dim-overlay"></div>
 
 <script>
 (function () {
@@ -832,11 +850,64 @@
     profilePill.textContent = 'profile: ' + (profiles.length ? profiles.join(', ') : 'claude code');
   }
 
+  // ---------------- Attention sound (T79) ----------------
+  // Same attention-edge trigger (needs-input/error) that T77 (knob ring) and
+  // T60 (knob buzzer) already use. Edge-triggered, not level-triggered: fires
+  // once when a session's status crosses INTO needs-input/error, not on every
+  // poll while it stays there.
+  // Requires Fully Kiosk Browser's "unrestricted audio/JS autoplay" setting
+  // enabled on the phone (T36's confirmed kiosk shell) -- without it, mobile
+  // WebViews block audio not triggered by a user gesture and this fails
+  // silently. Not detectable/settable from this page; flagged back to Brian
+  // via the coordinator rather than assumed on.
+  const NEEDS_ATTENTION = new Set(['needs-input', 'error']);
+  const prevSessionStatus = new Map(); // sessionId -> last-seen status
+  let audioCtx = null;
+
+  function beep() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.3, audioCtx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.25);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.26);
+    } catch (err) {
+      // autoplay blocked / no Web Audio support -- fail silently, nothing to render
+    }
+  }
+
+  function checkAttentionEdges(sessions) {
+    let shouldBeep = false;
+    const seenIds = new Set();
+    for (const s of sessions) {
+      seenIds.add(s.sessionId);
+      const prev = prevSessionStatus.get(s.sessionId);
+      if (NEEDS_ATTENTION.has(s.status) && (prev === undefined || !NEEDS_ATTENTION.has(prev))) {
+        shouldBeep = true;
+      }
+      prevSessionStatus.set(s.sessionId, s.status);
+    }
+    // Drop tracking for sessions no longer reported so a later session reusing
+    // the same id (unlikely, but cheap to guard) starts its edge-detection fresh.
+    for (const id of prevSessionStatus.keys()) {
+      if (!seenIds.has(id)) prevSessionStatus.delete(id);
+    }
+    if (shouldBeep) beep();
+  }
+
   async function pollAgentSessions() {
     try {
       const resp = await fetch('/api/agent-sessions');
       if (!resp.ok) return;
       const sessions = await resp.json();
+      checkAttentionEdges(sessions);
       await renderSessionGrid(sessions);
     } catch (err) {
       // offline -- leave the last-rendered grid in place rather than clearing it
@@ -849,6 +920,55 @@
 
   pollAgentSessions();
   setInterval(pollAgentSessions, 5000); // same order of magnitude as pcState's own 5s report cadence
+
+  // ---------------- Idle dim (T78) ----------------
+  // Mirrors the knob's own idle-dim behavior (T40, lilygo-rotary-knob
+  // firmware): same 60s inactivity delay as the knob's default
+  // `timeouts.dimDelayMs` (GET/PUT /api/devices/{id}/state, confirmed live at
+  // 60000ms -- see PROGRESS.md's T40 entry). Hardcoded here rather than read
+  // from a device's `dimDelayMs` setting because this page isn't tied to a
+  // single device_id; revisit if the knob's default is ever changed and the
+  // two need to stay in lockstep. Applies to the whole page (not just the
+  // session-grid screen) -- same rationale as the knob dimming its whole
+  // display, not just one screen.
+  const IDLE_DIM_DELAY_MS = 60000;
+  const idleDimOverlay = document.getElementById('idle-dim-overlay');
+  let idleDimTimer = null;
+  let isDimmed = false;
+
+  function scheduleDim() {
+    clearTimeout(idleDimTimer);
+    idleDimTimer = setTimeout(dim, IDLE_DIM_DELAY_MS);
+  }
+
+  function dim() {
+    isDimmed = true;
+    idleDimOverlay.classList.add('active');
+  }
+
+  function wake() {
+    if (isDimmed) {
+      isDimmed = false;
+      idleDimOverlay.classList.remove('active');
+    }
+    scheduleDim();
+  }
+
+  // Any touch counts as activity, captured at the document level so it works
+  // regardless of which screen/element handles it. While dimmed, the first
+  // tap only wakes the screen -- preventDefault suppresses the synthesized
+  // click too (per the Pointer Events spec), so it doesn't also fire
+  // whatever's underneath (pager swipe, macro button, light toggle, etc.),
+  // same "wake doesn't also act" precedent most always-on kiosk displays use.
+  document.addEventListener('pointerdown', (e) => {
+    if (isDimmed) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    wake();
+  }, { capture: true });
+
+  scheduleDim();
 })();
 </script>
 
