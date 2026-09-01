@@ -93,6 +93,11 @@ DEFAULT_PC_STATE: dict[str, Any] = {
     "nowPlaying": None,
     "utcOffsetMinutes": None,
     "timeZoneName": None,
+    # T76: raw seconds since last real keyboard/mouse input on the PC
+    # (pc-dash-app's GetLastInputInfo-based signal), passthrough only -- the
+    # 30-min "treat PC as active" threshold comparison is downstream (knob),
+    # not this hub's job.
+    "lastInputSecondsAgo": None,
 }
 
 # Mutable per-macro runtime state (e.g. screenshot.capture's live capture
@@ -156,6 +161,10 @@ class PcStateUpdate(StrictModel):
     utcOffsetMinutes: int | None = None
     # Windows' Standard/Daylight display name -- cosmetic only, not parsed.
     timeZoneName: str | None = None
+    # T76: raw seconds since last real keyboard/mouse input on the PC.
+    # Passthrough only, same deep-merge/omit-vs-null semantics as the rest of
+    # pcState -- no threshold comparison on this hub's side.
+    lastInputSecondsAgo: int | None = None
 
 
 AgentSessionStatus = Literal["idle", "working", "needs-input", "error", "done"]
