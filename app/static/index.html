@@ -556,6 +556,16 @@
   const brightnessVal = document.getElementById('brightness-val');
   const lightStatus = document.getElementById('light-status');
 
+  // T75: dragging a slider thumb also bubbles pointerdown/pointerup up to
+  // `track`'s own swipe-nav handler (below), which mis-reads the drag as a
+  // page swipe. Stop the bubbling at the slider so swipe-nav never sees
+  // these events, without touching the slider's own native drag handling.
+  [warmthSlider, brightnessSlider].forEach((slider) => {
+    slider.addEventListener('pointerdown', (e) => e.stopPropagation());
+    slider.addEventListener('pointerup', (e) => e.stopPropagation());
+    slider.addEventListener('pointercancel', (e) => e.stopPropagation());
+  });
+
   let lightOn = false;
   let suppressSliderPost = true;
 
