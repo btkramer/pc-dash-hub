@@ -53,6 +53,12 @@ AGENT_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # PC_STATE_STALE_AFTER_SECONDS accordingly. Proposed, not yet confirmed
 # against pc-dash-app's actual hook-forwarding cadence.
 AGENT_SESSION_STALE_AFTER_SECONDS = int(os.environ.get("AGENT_SESSION_STALE_AFTER_SECONDS", "120"))
+# T87: how long a session that just transitioned working->idle is exposed as
+# status "done" before GET reports it as plain "idle" again. Consumers (knob
+# T90, phone T93) fire a one-time completion chime on the edge into "done";
+# the lingering window means a poll at any cadence up to this many seconds
+# catches it. `stoppedAt` is also in the payload for timestamp-based dedupe.
+AGENT_SESSION_DONE_DECAY_SECONDS = int(os.environ.get("AGENT_SESSION_DONE_DECAY_SECONDS", "15"))
 
 DEFAULT_AGENT_SESSION: dict[str, Any] = {
     # Which agent tool's protocol this session speaks -- free string
@@ -63,6 +69,21 @@ DEFAULT_AGENT_SESSION: dict[str, Any] = {
     "project": None,
     "startedAt": None,
     "updatedAt": None,
+    # T87: ISO8601 UTC, server-stamped on a working->idle transition, cleared
+    # when the session goes active again (working/needs-input). Null otherwise.
+    "stoppedAt": None,
+}
+
+GLOBAL_SETTINGS_PATH = DATA_DIR / "settings.json"
+# T89: ecosystem-wide tunables not tied to any one device. pc-dash-app owns
+# the values (T88); this hub stores + relays them. Echoed read-only into
+# GET /api/devices/{id}/state's `settings` block so the knob gets them via
+# its existing poll, and served directly at GET /api/settings for the phone
+# (T93), which has no device_id.
+DEFAULT_GLOBAL_SETTINGS: dict[str, Any] = {
+    # How often the knob/phone re-fire the two-beep attention chime while a
+    # session sits unresolved in needs-input/error. Minutes.
+    "attentionRenagMinutes": 5,
 }
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -174,11 +195,18 @@ class AgentSessionUpdate(StrictModel):
     # T57: partial update, deep-merged into the stored entry -- same
     # exclude_unset/omit-vs-explicit-null semantics as PcStateUpdate.
     # updatedAt is server-stamped (like pcState's lastSeenAt), not
-    # client-settable.
+    # client-settable. stoppedAt (T87) is likewise server-managed, not a
+    # field here.
     agentProfile: str | None = None
     status: AgentSessionStatus | None = None
     project: str | None = None
     startedAt: str | None = None
+
+
+class GlobalSettingsUpdate(StrictModel):
+    # T89: partial update, deep-merged into the stored global settings doc.
+    # 0 = re-nag disabled (entry chime only); >=1 = repeat interval in minutes.
+    attentionRenagMinutes: int | None = Field(default=None, ge=0)
 
 
 class LogoAssignment(StrictModel):
@@ -304,6 +332,38 @@ def _save_agent_sessions_index(index: dict[str, dict]) -> None:
     AGENT_SESSIONS_INDEX_PATH.write_text(json.dumps(index, indent=2))
 
 
+def _load_global_settings() -> dict[str, Any]:
+    if not GLOBAL_SETTINGS_PATH.exists():
+        return {}
+    return json.loads(GLOBAL_SETTINGS_PATH.read_text())
+
+
+def _save_global_settings(stored: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    GLOBAL_SETTINGS_PATH.write_text(json.dumps(stored, indent=2))
+
+
+def _global_settings() -> dict[str, Any]:
+    return _with_defaults(DEFAULT_GLOBAL_SETTINGS, _load_global_settings())
+
+
+def _most_recent_pc_report() -> str | None:
+    # T93/option (b): the newest lastSeenAt across all per-device docs. The
+    # phone session-grid has no device_id of its own, so GET /api/pc-status
+    # derives PC connectivity from whichever device reported pcState most
+    # recently (t-encoder-pro today, but not hardcoded).
+    latest: str | None = None
+    if DEVICES_DIR.is_dir():
+        for path in DEVICES_DIR.glob("*.json"):
+            try:
+                seen = json.loads(path.read_text()).get("lastSeenAt")
+            except (json.JSONDecodeError, OSError):
+                continue
+            if seen is not None and (latest is None or seen > latest):
+                latest = seen
+    return latest
+
+
 def _validate_session_id(session_id: str) -> None:
     if not AGENT_SESSION_ID_RE.match(session_id):
         raise HTTPException(status_code=400, detail="invalid session_id")
@@ -318,9 +378,22 @@ def _agent_session_public_entry(session_id: str, entry: dict) -> dict:
         seen = datetime.fromisoformat(updated_at)
         seconds_ago = (datetime.now(timezone.utc) - seen).total_seconds()
         stale = seconds_ago >= AGENT_SESSION_STALE_AFTER_SECONDS
+
+    # T87: "done" is a transient state. Keep reporting it (so a poll at any
+    # cadence catches the completion edge) until it has aged past the decay
+    # window, then present it as plain "idle". stoppedAt stays in the payload
+    # so a consumer can also dedupe on the timestamp instead of the edge.
+    status = entry.get("status")
+    stopped_at = entry.get("stoppedAt")
+    if status == "done" and stopped_at is not None:
+        stopped_age = (datetime.now(timezone.utc) - datetime.fromisoformat(stopped_at)).total_seconds()
+        if stopped_age >= AGENT_SESSION_DONE_DECAY_SECONDS:
+            status = "idle"
+
     return {
         "sessionId": session_id,
         **entry,
+        "status": status,
         "lastUpdateSecondsAgo": None if seconds_ago is None else round(seconds_ago),
         "stale": stale,
     }
@@ -337,7 +410,9 @@ def _device_state(device_id: str, settings: dict, pc_state: dict, macro_state: d
 
     return {
         "deviceId": device_id,
-        "settings": settings,
+        # T89: global tunables echoed read-only for the knob's poll; not part
+        # of the persisted per-device settings doc.
+        "settings": {**settings, **_global_settings()},
         "pcState": {
             **pc_state,
             "pcConnected": connected,
@@ -523,6 +598,8 @@ async def put_agent_session(session_id: str, update: AgentSessionUpdate):
     _validate_session_id(session_id)
     index = _load_agent_sessions_index()
     is_new = session_id not in index
+    prev = _with_defaults(DEFAULT_AGENT_SESSION, index.get(session_id, {}))
+    prev_status = prev.get("status")
     entry = _with_defaults(DEFAULT_AGENT_SESSION, index.get(session_id, {}))
     update_fields = update.model_dump(exclude_unset=True)
     _deep_merge(entry, update_fields)
@@ -530,6 +607,17 @@ async def put_agent_session(session_id: str, update: AgentSessionUpdate):
     entry["updatedAt"] = now
     if is_new and entry.get("startedAt") is None:
         entry["startedAt"] = now
+
+    # T87: completion-edge detection. A working->idle transition becomes a
+    # transient "done" (see _agent_session_public_entry for the decay). Going
+    # active again (working / needs-input) clears any prior stoppedAt so the
+    # next completion is a fresh edge.
+    new_status = entry.get("status")
+    if prev_status == "working" and new_status == "idle":
+        entry["status"] = "done"
+        entry["stoppedAt"] = now
+    elif new_status in ("working", "needs-input"):
+        entry["stoppedAt"] = None
     index[session_id] = entry
     _save_agent_sessions_index(index)
     return _agent_session_public_entry(session_id, entry)
@@ -547,6 +635,36 @@ async def delete_agent_session(session_id: str):
     del index[session_id]
     _save_agent_sessions_index(index)
     return {"ok": True}
+
+
+@app.get("/api/settings")
+async def get_global_settings():
+    # T89: ecosystem-wide tunables (attentionRenagMinutes today). The phone
+    # session grid (T93) reads this directly; the knob gets the same values
+    # echoed into its device-state poll.
+    return _global_settings()
+
+
+@app.put("/api/settings")
+async def put_global_settings(update: GlobalSettingsUpdate):
+    stored = _load_global_settings()
+    _deep_merge(stored, update.model_dump(exclude_unset=True))
+    _save_global_settings(stored)
+    return _with_defaults(DEFAULT_GLOBAL_SETTINGS, stored)
+
+
+@app.get("/api/pc-status")
+async def get_pc_status():
+    # T93: decoupled PC-connectivity signal for the phone session-grid.
+    # Same staleness basis as a device's own pcState.pcConnected.
+    last_seen = _most_recent_pc_report()
+    if last_seen is None:
+        return {"pcConnected": False, "lastSeenSecondsAgo": None}
+    seconds_ago = (datetime.now(timezone.utc) - datetime.fromisoformat(last_seen)).total_seconds()
+    return {
+        "pcConnected": seconds_ago < PC_STATE_STALE_AFTER_SECONDS,
+        "lastSeenSecondsAgo": round(seconds_ago),
+    }
 
 
 @app.get("/api/devices/{device_id}/state")

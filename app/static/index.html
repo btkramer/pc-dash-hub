@@ -296,6 +296,8 @@
   }
   .session-tile .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--tile-color, var(--ink-faint)); position: absolute; top: 6px; right: 6px; }
   .session-tile .dot.pulse { animation: dotpulse 1.8s ease-in-out infinite; }
+  /* T93: needs-input pulses slower than working, matching the knob's ring reframe. */
+  .session-tile .dot.pulse.slow { animation-duration: 2.8s; }
   @keyframes dotpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
   .session-tile .stale-mark { position: absolute; top: 5px; left: 8px; font-size: 0.55rem; color: var(--ink-faint); }
   .dev-eyebrow { font-family: var(--font-mono); font-size: 0.55rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); }
@@ -489,8 +491,8 @@
   <div class="overlay-panel">
     <p class="detail-title">Session state</p>
     <div class="legend-row"><span class="sw" style="background:var(--ink-dim);"></span><span class="lbl">idle</span><span class="desc">no active work</span></div>
-    <div class="legend-row"><span class="sw" style="background:var(--cool);"></span><span class="lbl">working</span><span class="desc">session executing</span></div>
-    <div class="legend-row"><span class="sw" style="background:var(--warm);"></span><span class="lbl">needs input</span><span class="desc">waiting on you</span></div>
+    <div class="legend-row"><span class="sw" style="background:var(--warm);"></span><span class="lbl">working</span><span class="desc">executing &mdash; orange pulse</span></div>
+    <div class="legend-row"><span class="sw" style="background:var(--critical);"></span><span class="lbl">needs input</span><span class="desc">waiting on you &mdash; red pulse, repeating chime</span></div>
     <div class="legend-row"><span class="sw" style="background:var(--critical);"></span><span class="lbl">error</span><span class="desc">hook reported a failure</span></div>
     <div class="legend-row"><span class="sw" style="background:var(--success);"></span><span class="lbl">done</span><span class="desc">finished, unreviewed</span></div>
   </div>
@@ -662,10 +664,12 @@
   // for Task-tool subagents, and prompt/response content is a deliberately
   // unresolved privacy question per the mockup's own notes).
   const MAX_TILES = 6; // fixed 3x2 grid, matches the Codex Micro/OpenMicro precedent the design is built on
+  // T93 reframe: working = orange, needs-input/error = red (slower pulse),
+  // done/idle = no pulse. Mirrors the knob's attention-indicator model (T90).
   const STATUS_COLOR = {
     idle: 'var(--ink-dim)',
-    working: 'var(--cool)',
-    'needs-input': 'var(--warm)',
+    working: 'var(--warm)',
+    'needs-input': 'var(--critical)',
     error: 'var(--critical)',
     done: 'var(--success)',
   };
@@ -679,6 +683,11 @@
   // Same precedence used for the knob's aggregate far-glance color, reused
   // here to order tiles worth-a-look-first.
   const STATUS_PRIORITY = { error: 0, 'needs-input': 1, working: 2, done: 3, idle: 4 };
+
+  // T93: shared attention state (declared here so buildSessionTile can read it).
+  const NEEDS_ATTENTION = new Set(['needs-input', 'error']);
+  let pcOnline = true;
+  let renagMinutes = 5; // GET /api/settings.attentionRenagMinutes; 0 = no repeat
 
   const sessionGrid = document.getElementById('session-grid');
   const legendHint = document.getElementById('legend-hint');
@@ -787,7 +796,14 @@
     tile.appendChild(bar);
 
     const dot = document.createElement('span');
-    dot.className = 'dot' + (session.status === 'needs-input' ? ' pulse' : '');
+    dot.className = 'dot';
+    // T93: indicator follows the reframe -- orange pulse for working, slower
+    // red pulse for needs-input/error, off for idle/done. All off when the PC
+    // is offline.
+    if (pcOnline) {
+      if (session.status === 'working') dot.classList.add('pulse');
+      else if (NEEDS_ATTENTION.has(session.status)) dot.classList.add('pulse', 'slow');
+    }
     tile.appendChild(dot);
 
     if (session.stale) {
@@ -860,18 +876,22 @@
     profilePill.textContent = 'profile: ' + (profiles.length ? profiles.join(', ') : 'claude code');
   }
 
-  // ---------------- Attention sound (T79) ----------------
-  // Same attention-edge trigger (needs-input/error) that T77 (knob ring) and
-  // T60 (knob buzzer) already use. Edge-triggered, not level-triggered: fires
-  // once when a session's status crosses INTO needs-input/error, not on every
-  // poll while it stays there.
+  // ---------------- Attention sound (T79, reframed by T93) ----------------
+  // v1.1 batch 2 model, mirroring the knob (T90):
+  //  - one two-beep completion chime on a session's working->done edge
+  //    (T87's hub-detected transient `done` state);
+  //  - two-beep attention chime when a session enters needs-input/error, then
+  //    repeated every `attentionRenagMinutes` (GET /api/settings) while it
+  //    stays unresolved; 0 = entry chime only, no repeat;
+  //  - everything cleared while the PC is offline (GET /api/pc-status), and
+  //    edge tracking reset so reconnection doesn't spuriously re-fire.
   // Requires Fully Kiosk Browser's "unrestricted audio/JS autoplay" setting
   // enabled on the phone (T36's confirmed kiosk shell) -- without it, mobile
-  // WebViews block audio not triggered by a user gesture and this fails
-  // silently. Not detectable/settable from this page; flagged back to Brian
-  // via the coordinator rather than assumed on.
-  const NEEDS_ATTENTION = new Set(['needs-input', 'error']);
+  // WebViews block non-gesture audio and this fails silently. Not
+  // detectable/settable from this page; flagged back via the coordinator.
   const prevSessionStatus = new Map(); // sessionId -> last-seen status
+  const attentionSince = new Map();    // sessionId -> Date.now() when it entered needs-attention
+  let lastRenagAt = 0;
   let audioCtx = null;
 
   function beep() {
@@ -889,35 +909,82 @@
       osc.start();
       osc.stop(audioCtx.currentTime + 0.26);
     } catch (err) {
-      // autoplay blocked / no Web Audio support -- fail silently, nothing to render
+      // autoplay blocked / no Web Audio support -- fail silently
     }
   }
 
-  function checkAttentionEdges(sessions) {
-    let shouldBeep = false;
+  function chime() {
+    // Two-beep, matching the knob's attention/completion chime.
+    beep();
+    setTimeout(beep, 180);
+  }
+
+  function processAttention(sessions) {
+    if (!pcOnline) {
+      // PC offline -- no indicators, no chimes, and forget history so a
+      // reconnect starts every session's edge detection fresh.
+      prevSessionStatus.clear();
+      attentionSince.clear();
+      return;
+    }
+    const now = Date.now();
     const seenIds = new Set();
+    let completionEdge = false;
+    let attentionEdge = false;
     for (const s of sessions) {
       seenIds.add(s.sessionId);
       const prev = prevSessionStatus.get(s.sessionId);
-      if (NEEDS_ATTENTION.has(s.status) && (prev === undefined || !NEEDS_ATTENTION.has(prev))) {
-        shouldBeep = true;
+      if (s.status === 'done' && prev === 'working') completionEdge = true;
+      if (NEEDS_ATTENTION.has(s.status)) {
+        if (prev === undefined || !NEEDS_ATTENTION.has(prev)) {
+          attentionEdge = true;
+          attentionSince.set(s.sessionId, now);
+        }
+      } else {
+        attentionSince.delete(s.sessionId);
       }
       prevSessionStatus.set(s.sessionId, s.status);
     }
-    // Drop tracking for sessions no longer reported so a later session reusing
-    // the same id (unlikely, but cheap to guard) starts its edge-detection fresh.
-    for (const id of prevSessionStatus.keys()) {
-      if (!seenIds.has(id)) prevSessionStatus.delete(id);
+    for (const id of [...prevSessionStatus.keys()]) {
+      if (!seenIds.has(id)) { prevSessionStatus.delete(id); attentionSince.delete(id); }
     }
-    if (shouldBeep) beep();
+
+    if (attentionEdge || completionEdge) chime();
+    if (attentionEdge) lastRenagAt = now;
+    // Repeating re-nag: any session still unresolved, interval elapsed.
+    if (renagMinutes > 0 && attentionSince.size > 0 && now - lastRenagAt >= renagMinutes * 60000) {
+      chime();
+      lastRenagAt = now;
+    }
+  }
+
+  async function refreshRenagMinutes() {
+    try {
+      const resp = await fetch('/api/settings');
+      if (resp.ok) {
+        const s = await resp.json();
+        if (typeof s.attentionRenagMinutes === 'number') renagMinutes = s.attentionRenagMinutes;
+      }
+    } catch (err) { /* keep last-known */ }
+  }
+
+  async function refreshPcOnline() {
+    try {
+      const resp = await fetch('/api/pc-status');
+      if (resp.ok) {
+        const s = await resp.json();
+        pcOnline = !!s.pcConnected;
+      }
+    } catch (err) { /* keep last-known */ }
   }
 
   async function pollAgentSessions() {
     try {
+      await refreshPcOnline();
       const resp = await fetch('/api/agent-sessions');
       if (!resp.ok) return;
       const sessions = await resp.json();
-      checkAttentionEdges(sessions);
+      processAttention(sessions);
       await renderSessionGrid(sessions);
     } catch (err) {
       // offline -- leave the last-rendered grid in place rather than clearing it
@@ -928,6 +995,8 @@
   legendOverlay.addEventListener('click', (e) => { if (e.target === legendOverlay) legendOverlay.classList.add('hidden'); });
   detailOverlay.addEventListener('click', (e) => { if (e.target === detailOverlay) detailOverlay.classList.add('hidden'); });
 
+  refreshRenagMinutes();
+  setInterval(refreshRenagMinutes, 60000); // slow-changing tunable, no need to poll it every 5s
   pollAgentSessions();
   setInterval(pollAgentSessions, 5000); // same order of magnitude as pcState's own 5s report cadence
 
