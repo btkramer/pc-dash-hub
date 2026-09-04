@@ -876,13 +876,17 @@
     profilePill.textContent = 'profile: ' + (profiles.length ? profiles.join(', ') : 'claude code');
   }
 
-  // ---------------- Attention sound (T79, reframed by T93, T96/T102) ------
+  // ---------------- Attention sound (T79, reframed by T93, T96/T102/T-two-tier) --
   // v1.1 batch 2 model, mirroring the knob (T90):
-  //  - one two-beep completion chime per session turn-end, deduped on the
+  //  - two-tier completion chime per session turn-end, deduped on the
   //    `stoppedAt` value (T102: the hub guarantees `done` always carries a
   //    stoppedAt and bumps it per turn-end; keying on the value rather than
   //    the working->done status edge is robust even if the transient `done`
-  //    has already decayed to `idle` by the time we poll);
+  //    has already decayed to `idle` by the time we poll). Brian-approved
+  //    two-tier split: if another session is still `working` when this one
+  //    completes, play the partial-complete chime (more work pending);
+  //    if none are, play the all-clear chime instead (this was the last
+  //    one) -- same split going to the knob so both surfaces converge;
   //  - two-beep attention chime when a session enters needs-input/error, then
   //    repeated every `attentionRenagMinutes` (GET /api/settings) while it
   //    stays unresolved; 0 = entry chime only, no repeat;
@@ -901,30 +905,53 @@
   let phoneBeepEnabled = true; // GET /api/settings.phoneBeepEnabled (T96)
   let audioCtx = null;
 
-  function beep() {
+  function playTone(freqHz, durationMs) {
     try {
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.type = 'sine';
-      osc.frequency.value = 880;
+      osc.frequency.value = freqHz;
+      const durationSec = durationMs / 1000;
       gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.3, audioCtx.currentTime + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.25);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + durationSec);
       osc.connect(gain).connect(audioCtx.destination);
       osc.start();
-      osc.stop(audioCtx.currentTime + 0.26);
+      osc.stop(audioCtx.currentTime + durationSec + 0.01);
     } catch (err) {
       // autoplay blocked / no Web Audio support -- fail silently
     }
   }
 
+  function beep() {
+    playTone(880, 250);
+  }
+
   function chime() {
-    // Two-beep, matching the knob's attention/completion chime.
+    // Two-beep, matching the knob's attention chime.
     if (!phoneBeepEnabled) return; // T96: phone beep disabled globally
     beep();
     setTimeout(beep, 180);
+  }
+
+  function playSequence(freqsHz, noteMs, gapMs) {
+    if (!phoneBeepEnabled) return; // T96: phone beep disabled globally
+    freqsHz.forEach((freqHz, i) => setTimeout(() => playTone(freqHz, noteMs), i * (noteMs + gapMs)));
+  }
+
+  // Two-tier completion chime (Brian-approved, audition-bench-confirmed
+  // 2026-09-03), same note set going to the knob so both surfaces converge.
+  function partialCompleteChime() {
+    // Other work still pending -- 2 ascending notes.
+    playSequence([587.33, 783.99], 140, 40);
+  }
+
+  function allClearChime() {
+    // Nothing else pending -- 3 ascending notes. Replaces (not adds to) the
+    // partial-complete chime for this event.
+    playSequence([587.33, 783.99, 1046.5], 150, 40);
   }
 
   function processAttention(sessions) {
@@ -970,7 +997,15 @@
       }
     }
 
-    if (attentionEdge || completionEdge) chime();
+    if (completionEdge) {
+      // A session just completed and is now "done"/"idle", not "working" --
+      // so checking every session in this same poll for "working" is
+      // equivalent to checking every *other* session.
+      const anyOtherWorking = sessions.some((s) => s.status === 'working');
+      if (anyOtherWorking) partialCompleteChime();
+      else allClearChime();
+    }
+    if (attentionEdge) chime();
     if (attentionEdge) lastRenagAt = now;
     // Repeating re-nag: any session still unresolved, interval elapsed.
     if (renagMinutes > 0 && attentionSince.size > 0 && now - lastRenagAt >= renagMinutes * 60000) {
