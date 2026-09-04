@@ -69,8 +69,13 @@ DEFAULT_AGENT_SESSION: dict[str, Any] = {
     "project": None,
     "startedAt": None,
     "updatedAt": None,
-    # T87: ISO8601 UTC, server-stamped on a working->idle transition, cleared
-    # when the session goes active again (working/needs-input). Null otherwise.
+    # T87/T102: ISO8601 UTC completion timestamp. Invariant: whenever status
+    # is "done", stoppedAt is set -- the hub stamps it whether "done" was
+    # client-PUT (the forwarder's Stop mapping) or server-computed (the
+    # working->idle edge). Cleared when the session goes active again
+    # (working/needs-input/error). "done" decays back to "idle" after
+    # AGENT_SESSION_DONE_DECAY_SECONDS; consumers dedup completion chimes on
+    # the stoppedAt value.
     "stoppedAt": None,
 }
 
@@ -84,6 +89,16 @@ DEFAULT_GLOBAL_SETTINGS: dict[str, Any] = {
     # How often the knob/phone re-fire the two-beep attention chime while a
     # session sits unresolved in needs-input/error. Minutes.
     "attentionRenagMinutes": 5,
+    # T96: independent per-surface beep enables, replacing the single
+    # per-device settings.buzzerEnabled. Both default true. The WPF app
+    # (T96) is a GET+PUT /api/settings client for these; the phone
+    # session-grid UI consumes phoneBeepEnabled (T93 chimes). The knob
+    # reads settings.buzzerEnabled today -- during rollout the
+    # device-state echo mirrors knobBeepEnabled into that slot (see
+    # _device_state); drop the mirror once the knob OTA reads
+    # knobBeepEnabled directly. vibrationEnabled stays per-device.
+    "knobBeepEnabled": True,
+    "phoneBeepEnabled": True,
 }
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -207,6 +222,10 @@ class GlobalSettingsUpdate(StrictModel):
     # T89: partial update, deep-merged into the stored global settings doc.
     # 0 = re-nag disabled (entry chime only); >=1 = repeat interval in minutes.
     attentionRenagMinutes: int | None = Field(default=None, ge=0)
+    # T96: see DEFAULT_GLOBAL_SETTINGS. Field-level merge -- a PUT of just
+    # one of these leaves the other and attentionRenagMinutes untouched.
+    knobBeepEnabled: bool | None = None
+    phoneBeepEnabled: bool | None = None
 
 
 class LogoAssignment(StrictModel):
@@ -340,7 +359,13 @@ def _load_global_settings() -> dict[str, Any]:
 
 def _save_global_settings(stored: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    GLOBAL_SETTINGS_PATH.write_text(json.dumps(stored, indent=2))
+    # T96: atomic write. The WPF app and a future phone settings UI are both
+    # /api/settings writers now -- a concurrent GET must never see a
+    # half-written file. Write a temp file in the same dir, then os.replace
+    # (atomic on POSIX).
+    tmp = GLOBAL_SETTINGS_PATH.with_name(GLOBAL_SETTINGS_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(stored, indent=2))
+    os.replace(tmp, GLOBAL_SETTINGS_PATH)
 
 
 def _global_settings() -> dict[str, Any]:
@@ -385,10 +410,18 @@ def _agent_session_public_entry(session_id: str, entry: dict) -> dict:
     # so a consumer can also dedupe on the timestamp instead of the edge.
     status = entry.get("status")
     stopped_at = entry.get("stoppedAt")
-    if status == "done" and stopped_at is not None:
-        stopped_age = (datetime.now(timezone.utc) - datetime.fromisoformat(stopped_at)).total_seconds()
-        if stopped_age >= AGENT_SESSION_DONE_DECAY_SECONDS:
+    if status == "done":
+        if stopped_at is None:
+            # T102: `done` with no stoppedAt violates the `done <=> stoppedAt`
+            # invariant -- a legacy shape from a client PUT of status:"done"
+            # made before the hub stamped stoppedAt (put_agent_session now
+            # always does). Never a valid resting state; present as idle so
+            # it can't linger forever.
             status = "idle"
+        else:
+            stopped_age = (datetime.now(timezone.utc) - datetime.fromisoformat(stopped_at)).total_seconds()
+            if stopped_age >= AGENT_SESSION_DONE_DECAY_SECONDS:
+                status = "idle"
 
     return {
         "sessionId": session_id,
@@ -408,11 +441,18 @@ def _device_state(device_id: str, settings: dict, pc_state: dict, macro_state: d
         seconds_ago = (datetime.now(timezone.utc) - seen).total_seconds()
         connected = seconds_ago < PC_STATE_STALE_AFTER_SECONDS
 
+    global_settings = _global_settings()
+    # T96: `buzzerEnabled` is kept as a deprecated alias of the new global
+    # `knobBeepEnabled` while the knob firmware still reads it. The global
+    # value wins over any stored per-device buzzerEnabled -- the per-surface
+    # global toggle is authoritative now. Drop this line once the knob OTA
+    # reads knobBeepEnabled directly.
+    echo_settings = {**settings, **global_settings, "buzzerEnabled": global_settings["knobBeepEnabled"]}
     return {
         "deviceId": device_id,
         # T89: global tunables echoed read-only for the knob's poll; not part
         # of the persisted per-device settings doc.
-        "settings": {**settings, **_global_settings()},
+        "settings": echo_settings,
         "pcState": {
             **pc_state,
             "pcConnected": connected,
@@ -608,15 +648,28 @@ async def put_agent_session(session_id: str, update: AgentSessionUpdate):
     if is_new and entry.get("startedAt") is None:
         entry["startedAt"] = now
 
-    # T87: completion-edge detection. A working->idle transition becomes a
-    # transient "done" (see _agent_session_public_entry for the decay). Going
-    # active again (working / needs-input) clears any prior stoppedAt so the
-    # next completion is a fresh edge.
+    # T87/T102: completion-edge detection + the `done <=> stoppedAt`
+    # invariant. `done` is a transient completion marker that MUST carry a
+    # stoppedAt; it decays back to "idle" after
+    # AGENT_SESSION_DONE_DECAY_SECONDS (see _agent_session_public_entry).
     new_status = entry.get("status")
-    if prev_status == "working" and new_status == "idle":
+    if new_status == "done":
+        # T102: a client can PUT status:"done" directly (the hook
+        # forwarder's Stop mapping) without a stoppedAt -- stamp it. Preserve
+        # an existing one on a repeated `done` (back-to-back Stop with no
+        # activity between) so the decay clock and consumers' timestamp
+        # dedup aren't reset.
+        if entry.get("stoppedAt") is None or prev_status != "done":
+            entry["stoppedAt"] = now
+    elif prev_status == "working" and new_status == "idle":
+        # T87 fallback: a client that reports plain `idle` at turn end
+        # (rather than `done`) still gets a server-computed completion edge.
         entry["status"] = "done"
         entry["stoppedAt"] = now
-    elif new_status in ("working", "needs-input"):
+    elif new_status in ("working", "needs-input", "error"):
+        # Active again (or errored) -- clear any prior stoppedAt so the next
+        # completion is a fresh edge. T102 added "error" here; it was
+        # previously left carrying a stale stoppedAt.
         entry["stoppedAt"] = None
     index[session_id] = entry
     _save_agent_sessions_index(index)

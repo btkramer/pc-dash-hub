@@ -876,22 +876,29 @@
     profilePill.textContent = 'profile: ' + (profiles.length ? profiles.join(', ') : 'claude code');
   }
 
-  // ---------------- Attention sound (T79, reframed by T93) ----------------
+  // ---------------- Attention sound (T79, reframed by T93, T96/T102) ------
   // v1.1 batch 2 model, mirroring the knob (T90):
-  //  - one two-beep completion chime on a session's working->done edge
-  //    (T87's hub-detected transient `done` state);
+  //  - one two-beep completion chime per session turn-end, deduped on the
+  //    `stoppedAt` value (T102: the hub guarantees `done` always carries a
+  //    stoppedAt and bumps it per turn-end; keying on the value rather than
+  //    the working->done status edge is robust even if the transient `done`
+  //    has already decayed to `idle` by the time we poll);
   //  - two-beep attention chime when a session enters needs-input/error, then
   //    repeated every `attentionRenagMinutes` (GET /api/settings) while it
   //    stays unresolved; 0 = entry chime only, no repeat;
+  //  - all chimes gated by `phoneBeepEnabled` (GET /api/settings, T96) --
+  //    visual indicators are unaffected;
   //  - everything cleared while the PC is offline (GET /api/pc-status), and
   //    edge tracking reset so reconnection doesn't spuriously re-fire.
   // Requires Fully Kiosk Browser's "unrestricted audio/JS autoplay" setting
   // enabled on the phone (T36's confirmed kiosk shell) -- without it, mobile
   // WebViews block non-gesture audio and this fails silently. Not
   // detectable/settable from this page; flagged back via the coordinator.
-  const prevSessionStatus = new Map(); // sessionId -> last-seen status
-  const attentionSince = new Map();    // sessionId -> Date.now() when it entered needs-attention
+  const prevSessionStatus = new Map();   // sessionId -> last-seen status (attention edges)
+  const completionStoppedAt = new Map(); // sessionId -> last-seen stoppedAt value (completion dedup)
+  const attentionSince = new Map();      // sessionId -> Date.now() when it entered needs-attention
   let lastRenagAt = 0;
+  let phoneBeepEnabled = true; // GET /api/settings.phoneBeepEnabled (T96)
   let audioCtx = null;
 
   function beep() {
@@ -915,6 +922,7 @@
 
   function chime() {
     // Two-beep, matching the knob's attention/completion chime.
+    if (!phoneBeepEnabled) return; // T96: phone beep disabled globally
     beep();
     setTimeout(beep, 180);
   }
@@ -924,6 +932,7 @@
       // PC offline -- no indicators, no chimes, and forget history so a
       // reconnect starts every session's edge detection fresh.
       prevSessionStatus.clear();
+      completionStoppedAt.clear();
       attentionSince.clear();
       return;
     }
@@ -934,7 +943,15 @@
     for (const s of sessions) {
       seenIds.add(s.sessionId);
       const prev = prevSessionStatus.get(s.sessionId);
-      if (s.status === 'done' && prev === 'working') completionEdge = true;
+      // T102: completion dedup on the stoppedAt value, per session. First
+      // sight of a session only records its baseline (no chime for a
+      // stoppedAt that predates this page load); a later change to a new
+      // truthy value is one completed turn.
+      const known = completionStoppedAt.has(s.sessionId);
+      if (known && s.stoppedAt && s.stoppedAt !== completionStoppedAt.get(s.sessionId)) {
+        completionEdge = true;
+      }
+      completionStoppedAt.set(s.sessionId, s.stoppedAt || null);
       if (NEEDS_ATTENTION.has(s.status)) {
         if (prev === undefined || !NEEDS_ATTENTION.has(prev)) {
           attentionEdge = true;
@@ -946,7 +963,11 @@
       prevSessionStatus.set(s.sessionId, s.status);
     }
     for (const id of [...prevSessionStatus.keys()]) {
-      if (!seenIds.has(id)) { prevSessionStatus.delete(id); attentionSince.delete(id); }
+      if (!seenIds.has(id)) {
+        prevSessionStatus.delete(id);
+        completionStoppedAt.delete(id);
+        attentionSince.delete(id);
+      }
     }
 
     if (attentionEdge || completionEdge) chime();
@@ -958,12 +979,13 @@
     }
   }
 
-  async function refreshRenagMinutes() {
+  async function refreshSettings() {
     try {
       const resp = await fetch('/api/settings');
       if (resp.ok) {
         const s = await resp.json();
         if (typeof s.attentionRenagMinutes === 'number') renagMinutes = s.attentionRenagMinutes;
+        if (typeof s.phoneBeepEnabled === 'boolean') phoneBeepEnabled = s.phoneBeepEnabled; // T96
       }
     } catch (err) { /* keep last-known */ }
   }
@@ -995,8 +1017,8 @@
   legendOverlay.addEventListener('click', (e) => { if (e.target === legendOverlay) legendOverlay.classList.add('hidden'); });
   detailOverlay.addEventListener('click', (e) => { if (e.target === detailOverlay) detailOverlay.classList.add('hidden'); });
 
-  refreshRenagMinutes();
-  setInterval(refreshRenagMinutes, 60000); // slow-changing tunable, no need to poll it every 5s
+  refreshSettings();
+  setInterval(refreshSettings, 60000); // slow-changing tunables, no need to poll every 5s
   pollAgentSessions();
   setInterval(pollAgentSessions, 5000); // same order of magnitude as pcState's own 5s report cadence
 
