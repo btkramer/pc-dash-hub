@@ -1,5 +1,6 @@
 # PC Dash Hub
 
+[![CI](https://github.com/btkramer/pc-dash-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/btkramer/pc-dash-hub/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
@@ -73,3 +74,30 @@ docker run -d --name pc-dash-hub -p 8015:8000 --env-file .env \
 
 Settings and logos persist under `DATA_DIR` (default `data/`). Use a long-lived Home Assistant
 token from a dedicated, least-privilege user.
+
+## Testing
+
+```sh
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite uses FastAPI's `TestClient`, a fresh temporary data directory per test and an in-memory
+stand-in for Home Assistant, so it never touches real data or the network. CI runs it, plus a
+Docker build, on every push and pull request.
+
+## Security model
+
+The hub is built for a **trusted home LAN**. It has **no authentication** by default: anything that
+can reach its port can read and change device state, settings, agent sessions and logos, and can
+switch the Home Assistant light it's configured for. **Do not expose it to the internet** (no port
+forwarding, no public reverse proxy). For remote access, use a VPN such as WireGuard or Tailscale.
+
+The Home Assistant token stays on the hub and is never sent to clients, but the hub will use it on
+behalf of anyone who can reach it. That's another reason to give it a dedicated, least-privilege HA
+user.
+
+**Optional token (off by default).** Set `HUB_TOKEN` and every request except `/health` must send
+`Authorization: Bearer <HUB_TOKEN>`; anything else gets `401`. The knob firmware, pc-dash-app and
+the phone deck don't send a token yet, so turning this on today locks them out. It's there for
+scripts and for future client support. With `HUB_TOKEN` unset, behavior is unchanged.

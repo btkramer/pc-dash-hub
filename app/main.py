@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -8,8 +9,8 @@ from typing import Any, Literal
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 load_dotenv()
@@ -36,6 +37,11 @@ LOGO_ASSIGNMENTS_DIR = DATA_DIR / "logo-assignments"
 # See coordinator-reports/pc-dash.md's 2026-08-27 T52 entry for why this
 # isn't a `/api/projects/{project_id}/logo`-shaped endpoint.
 LOGO_ASSIGNMENT_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+# Optional shared secret, off by default. Unset = no authentication (the hub trusts its LAN, as it
+# always has). When set, every request except /health must send "Authorization: Bearer <HUB_TOKEN>".
+# The knob firmware, pc-dash-app and the phone deck don't send one yet, so setting it locks them out.
+HUB_TOKEN = os.environ.get("HUB_TOKEN", "")
 
 PC_STATE_STALE_AFTER_SECONDS = int(os.environ.get("PC_STATE_STALE_AFTER_SECONDS", "12"))
 
@@ -145,6 +151,19 @@ DEFAULT_PC_STATE: dict[str, Any] = {
 DEFAULT_MACRO_STATE: dict[str, Any] = {}
 
 app = FastAPI(title="pc-dash-hub")
+
+
+@app.middleware("http")
+async def require_hub_token(request: Request, call_next):
+    if HUB_TOKEN and request.url.path != "/health":
+        supplied = request.headers.get("authorization", "")
+        if not hmac.compare_digest(supplied.encode(), f"Bearer {HUB_TOKEN}".encode()):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "missing or invalid hub token"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    return await call_next(request)
 
 
 class LightRequest(BaseModel):
