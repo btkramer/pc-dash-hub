@@ -1,5 +1,10 @@
 # PC Dash Hub
 
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
+![Home Assistant](https://img.shields.io/badge/Home%20Assistant-18BCF2?logo=homeassistant&logoColor=white)
+
 A small self-hosted FastAPI service, run in Docker, that sits at the center of the PC Dash
 ecosystem. The knob, the Windows app and any browser talk to the hub instead of to each other:
 it stores and merges settings, relays live PC state with server-computed staleness, tracks
@@ -17,15 +22,31 @@ Part of the **PC Dash** family:
 | **pc-dash-hub** (this repo) | Self-hosted hub |
 | [pc-dash-app](https://github.com/btkramer/pc-dash-app) | Windows companion app that reports real PC audio, media and agent state |
 
+```mermaid
+flowchart LR
+  APP["Windows app"] -- "PUT pcState,<br/>agent events" --> HUB["pc-dash-hub<br/>(FastAPI)"]
+  KNOB["Knob (ESP32)"] <-- "GET state,<br/>settings" --> HUB
+  DECK["Phone deck"] <--> HUB
+  HUB -- "REST" --> HA["Home Assistant"]
 ```
- ┌──────────┐   PUT pcState    ┌──────────────┐   GET state    ┌──────────┐
- │ Windows  │ ───────────────▶ │  pc-dash-hub │ ◀───────────── │   Knob   │
- │   app    │   agent events   │  (FastAPI)   │   settings     │ (ESP32)  │
- └──────────┘                  └──────┬───────┘                └──────────┘
-                                      │ REST
-                                      ▼
-                               Home Assistant
-```
+
+## Phone deck
+
+The hub also serves a landscape phone "deck" with four swipeable screens: agent sessions,
+macros, light and scenes.
+
+| | |
+|:---:|:---:|
+| ![Macros](docs/images/deck-macros.png) | ![Light](docs/images/deck-light.png) |
+| **Macros**: a key grid that runs actions on the PC or through Home Assistant | **Light**: power, brightness and warmth faders, circadian presets |
+| ![Scenes](docs/images/deck-scenes.png) | |
+| **Scenes**: one-press room setups | |
+
+Themes are shared with the knob:
+
+![Deck sessions screen in the Typeset, Terminal and Stripes themes](docs/images/deck-themes.png)
+
+<sub>Deck screens are from the v2 design prototype.</sub>
 
 ## API
 
