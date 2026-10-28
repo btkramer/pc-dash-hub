@@ -5,6 +5,10 @@ ecosystem. The knob, the Windows app and any browser talk to the hub instead of 
 it stores and merges settings, relays live PC state with server-computed staleness, tracks
 Claude Code agent sessions and passes smart-home actions to Home Assistant.
 
+![Phone deck served by the hub: agent sessions needing attention](docs/images/screenshot.png)
+
+<sub>Design prototype of the phone deck the hub serves: sessions that need input or have failed light up.</sub>
+
 Part of the **PC Dash** family:
 
 | Repo | Role |
